@@ -21,12 +21,25 @@ class MainActivity : AppCompatActivity() {
 
         val resultView = findViewById<TextView>(R.id.resultText)
         val runButton = findViewById<Button>(R.id.runTestButton)
+        val runScanButton = findViewById<Button>(R.id.runScanButton)
 
         runButton.setOnClickListener {
             resultView.text = "Running environment test..."
             try {
                 val module = python.getModule("environment_test")
                 val result: PyObject = module.callAttr("run_all_checks")
+                resultView.text = result.toString()
+            } catch (e: Exception) {
+                resultView.text = "ERROR:\n${e.message}"
+            }
+        }
+
+        runScanButton.setOnClickListener {
+            resultView.text = "Running test scan..."
+            try {
+                val dbPath = filesDir.absolutePath + "/nse_research.db"
+                val module = python.getModule("test_scan")
+                val result: PyObject = module.callAttr("run_test_scan", dbPath)
                 resultView.text = result.toString()
             } catch (e: Exception) {
                 resultView.text = "ERROR:\n${e.message}"
