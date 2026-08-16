@@ -28,10 +28,37 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_prices_symbol ON prices(symbol)")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scans (
+            scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            timeframe TEXT NOT NULL,
+            condition_set_json TEXT NOT NULL,
+            is_locked INTEGER NOT NULL DEFAULT 0,
+            is_tracked INTEGER NOT NULL DEFAULT 0,
+            scan_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
     conn.commit()
 
 
 def insert_price_rows(conn: sqlite3.Connection, symbol: str, rows: List[Tuple[str, float]]) -> None:
+    """rows: list of (date_iso_string, close_float). Upserts (replace on conflict)."""
     conn.executemany(
         "INSERT OR REPLACE INTO prices (symbol, date, close) VALUES (?, ?, ?)",
         [(symbol, d, c) for d, c in rows],
@@ -45,6 +72,7 @@ def list_available_symbols(conn: sqlite3.Connection) -> List[str]:
 
 
 def get_price_series(conn: sqlite3.Connection, symbol: str) -> pd.DataFrame:
+    """Returns a DataFrame with columns [Date, Close], sorted ascending."""
     df = pd.read_sql_query(
         "SELECT date AS Date, close AS Close FROM prices WHERE symbol = ? ORDER BY date ASC",
         conn,
