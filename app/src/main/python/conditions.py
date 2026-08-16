@@ -32,8 +32,12 @@ INDICATOR_PARAMS: Dict[str, List[str]] = {
     "Reverse RSI 60": ["rsi_length", "smoothing_length"],
 }
 
-COMPARATORS = ("Equal", "Greater", "Greater Equal", "Less", "Less Equal", "Cross Above", "Cross Below")
+COMPARATORS = (
+    "Equal", "Greater", "Greater Equal", "Less", "Less Equal",
+    "Cross Above", "Cross Below", "Near", "Near Below", "Near Above",
+)
 _CROSS_COMPARATORS = {"Cross Above", "Cross Below"}
+_NEAR_COMPARATORS = {"Near", "Near Below", "Near Above"}
 _ENTRY_TO_HOLD_STATE = {
     "Cross Above": "Greater",
     "Cross Below": "Less",
@@ -42,6 +46,9 @@ _ENTRY_TO_HOLD_STATE = {
     "Less": "Less",
     "Less Equal": "Less Equal",
     "Equal": "Equal",
+    "Near": "Near",
+    "Near Below": "Near Below",
+    "Near Above": "Near Above",
 }
 
 
@@ -147,13 +154,22 @@ class Condition:
     left: IndicatorSpec
     comparator: str
     right: IndicatorSpec
+    tolerance_pct: Optional[float] = None
 
     def __post_init__(self):
         if self.comparator not in COMPARATORS:
             raise ConditionError(f"Invalid comparator: {self.comparator}")
+        if self.comparator in _NEAR_COMPARATORS:
+            if self.tolerance_pct is None:
+                raise ConditionError(f"'{self.comparator}' comparator requires tolerance_pct")
+            if self.tolerance_pct <= 0:
+                raise ConditionError("tolerance_pct must be greater than 0")
 
     def to_dict(self):
-        return {"left": self.left.to_dict(), "comparator": self.comparator, "right": self.right.to_dict()}
+        data = {"left": self.left.to_dict(), "comparator": self.comparator, "right": self.right.to_dict()}
+        if self.tolerance_pct is not None:
+            data["tolerance_pct"] = self.tolerance_pct
+        return data
 
     @staticmethod
     def from_dict(data):
@@ -161,16 +177,21 @@ class Condition:
             left=IndicatorSpec.from_dict(data["left"]),
             comparator=data["comparator"],
             right=IndicatorSpec.from_dict(data["right"]),
+            tolerance_pct=data.get("tolerance_pct"),
         )
 
     def label(self) -> str:
+        if self.comparator in _NEAR_COMPARATORS:
+            return f"{self.left.label()} {self.comparator} {self.right.label()} (\u00b1{self.tolerance_pct:g}%)"
         return f"{self.left.label()} {self.comparator} {self.right.label()}"
 
     def derive_exit_condition(self) -> "Condition":
         hold_state = _ENTRY_TO_HOLD_STATE.get(self.comparator)
         if hold_state is None:
             raise ConditionError(f"No exit rule for comparator: {self.comparator}")
-        return Condition(left=self.left, comparator=hold_state, right=self.right)
+        return Condition(
+            left=self.left, comparator=hold_state, right=self.right, tolerance_pct=self.tolerance_pct
+        )
 
     def is_cross_type(self) -> bool:
         return self.comparator in _CROSS_COMPARATORS
@@ -213,7 +234,7 @@ def _prev(x) -> float:
     return float(x)
 
 
-def _apply_comparator(comparator: str, left, right) -> bool:
+def _apply_comparator(comparator: str, left, right, tolerance_pct: Optional[float] = None) -> bool:
     l_last, r_last = _last(left), _last(right)
     if comparator in _CROSS_COMPARATORS:
         l_prev, r_prev = _prev(left), _prev(right)
@@ -234,6 +255,19 @@ def _apply_comparator(comparator: str, left, right) -> bool:
         return l_last < r_last
     if comparator == "Less Equal":
         return l_last <= r_last
+    if comparator in _NEAR_COMPARATORS:
+        if tolerance_pct is None:
+            raise ConditionError(f"'{comparator}' comparator requires tolerance_pct")
+        if r_last == 0:
+            return l_last == 0
+        diff = l_last - r_last
+        within_tolerance = abs(diff) / abs(r_last) <= (tolerance_pct / 100.0)
+        if comparator == "Near":
+            return within_tolerance
+        if comparator == "Near Below":
+            return within_tolerance and diff <= 0
+        if comparator == "Near Above":
+            return within_tolerance and diff >= 0
     raise ConditionError(f"Unsupported comparator: {comparator}")
 
 
@@ -258,7 +292,9 @@ def evaluate_condition_set(condition_set: ConditionSet, close: pd.Series) -> Tup
     for entry in condition_set:
         left_val = get(entry.condition.left)
         right_val = get(entry.condition.right)
-        cond_result = _apply_comparator(entry.condition.comparator, left_val, right_val)
+        cond_result = _apply_comparator(
+            entry.condition.comparator, left_val, right_val, entry.condition.tolerance_pct
+        )
 
         if running is None:
             running = cond_result
