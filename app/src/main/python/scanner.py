@@ -1,14 +1,8 @@
-"""
-Scanner core: reads price series from SQLite (via db.py), builds the
-requested timeframe (via timeframes.py), evaluates conditions (via
-conditions.py), and returns matches.
-"""
-
+"""Scanner core: SQLite -> timeframe -> indicators -> conditions -> matches."""
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
-
 import db
-from conditions import ConditionSet, evaluate_condition_set, ConditionError
+from conditions import evaluate_condition_set, ConditionError
 from timeframes import resample_close, resolve_requested_timeframes, TimeframeError
 
 
@@ -20,6 +14,7 @@ class DatabaseLoadError(Exception):
 class ScanMatch:
     symbol: str
     timeframe: str
+    date: str  # ISO date of the actual last trading bar used - not wall-clock "today"
     close: float
     values: Dict[str, float]
 
@@ -43,10 +38,10 @@ class Scanner:
         self.db_path = db_path
         self.conn = db.get_connection(db_path)
 
-    def list_available_symbols(self) -> List[str]:
+    def list_available_symbols(self):
         return db.list_available_symbols(self.conn)
 
-    def load_price_dataframe(self, symbol: str):
+    def load_price_dataframe(self, symbol):
         df = db.get_price_series(self.conn, symbol)
         if df.empty:
             raise DatabaseLoadError(f"{symbol}: no data in database")
@@ -54,15 +49,11 @@ class Scanner:
             raise DatabaseLoadError(f"{symbol}: insufficient history ({len(df)} rows)")
         return df
 
-    def run_scan(
-        self, condition_set: ConditionSet, timeframe: str, symbols: Optional[List[str]] = None
-    ) -> ScanSummary:
+    def run_scan(self, condition_set, timeframe, symbols=None) -> ScanSummary:
         if symbols is None:
             symbols = self.list_available_symbols()
-
         timeframes = resolve_requested_timeframes(timeframe)
         summary = ScanSummary(total_symbols=len(symbols))
-
         for symbol in symbols:
             try:
                 daily_df = self.load_price_dataframe(symbol)
@@ -71,7 +62,6 @@ class Scanner:
                 summary.failed_symbols.append((symbol, str(exc)))
                 summary.processed += 1
                 continue
-
             for tf in timeframes:
                 try:
                     tf_df = resample_close(daily_df, tf)
@@ -81,8 +71,10 @@ class Scanner:
                         continue
                     matched, values = evaluate_condition_set(condition_set, close_series)
                     if matched:
+                        last_date = tf_df["Date"].iloc[-1]
+                        date_str = last_date.date().isoformat() if hasattr(last_date, "date") else str(last_date)
                         summary.matches.append(
-                            ScanMatch(symbol, tf, float(close_series.iloc[-1]), values)
+                            ScanMatch(symbol, tf, date_str, float(close_series.iloc[-1]), values)
                         )
                         summary.matched_count += 1
                 except (TimeframeError, ConditionError):
@@ -91,9 +83,7 @@ class Scanner:
                 except Exception:
                     summary.skipped_insufficient_data += 1
                     continue
-
             summary.processed += 1
-
         return summary
 
     def close(self):
