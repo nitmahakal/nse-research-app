@@ -34,6 +34,8 @@ class MainActivity : AppCompatActivity() {
         val runSavedScanButton = findViewById<Button>(R.id.runSavedScanButton)
         val setPinButton = findViewById<Button>(R.id.setPinButton)
         val ownerModeButton = findViewById<Button>(R.id.ownerModeButton)
+        val dailyUpdateButton = findViewById<Button>(R.id.dailyUpdateButton)
+        val listSignalsButton = findViewById<Button>(R.id.listSignalsButton)
 
         fun refreshOwnerModeStatus() {
             ownerModeStatus.text = "Owner Mode: ${if (ownerModeUnlocked) "ON" else "OFF"}"
@@ -144,6 +146,32 @@ class MainActivity : AppCompatActivity() {
                         resultView.text = "ERROR:\n${e.message}"
                     }
                 }
+            }
+        }
+
+        dailyUpdateButton.setOnClickListener {
+            resultView.text = "Running daily update (track + mark-to-market)..."
+            try {
+                val module = python.getModule("app_bridge")
+                val result: PyObject = module.callAttr(
+                    "run_tracked_scans_and_update_report", dbPath
+                )
+                resultView.text = result.toString()
+            } catch (e: Exception) {
+                resultView.text = "ERROR:\n${e.message}"
+            }
+        }
+
+        listSignalsButton.setOnClickListener {
+            resultView.text = "Loading signals..."
+            try {
+                val module = python.getModule("app_bridge")
+                val result: PyObject = module.callAttr(
+                    "list_signals_report", dbPath, "Momentum Test Scan"
+                )
+                resultView.text = result.toString()
+            } catch (e: Exception) {
+                resultView.text = "ERROR:\n${e.message}"
             }
         }
 
