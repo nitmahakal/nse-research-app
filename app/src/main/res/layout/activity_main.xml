@@ -73,6 +73,27 @@
             android:text="Owner Mode: OFF" />
 
         <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:textStyle="bold"
+            android:text="Milestone 4 - Research Engine" />
+
+        <Button
+            android:id="@+id/dailyUpdateButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Run Daily Update (Track + Mark-to-Market)" />
+
+        <Button
+            android:id="@+id/listSignalsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="List Tracked Signals" />
+
+        <TextView
             android:id="@+id/resultText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
