@@ -1,12 +1,13 @@
 """
-Kotlin-facing bridge for Milestone 3 (Saved Scans + Owner Mode).
-Every function takes/returns plain strings so the Kotlin side stays
-simple - no complex object marshalling across the Chaquopy bridge yet.
+Kotlin-facing bridge, Milestones 3 + 4. Every function takes/returns
+plain strings/bools so the Kotlin side stays simple.
 """
 
 import db
 import scans_repository as scans_repo
 import settings_repository as settings_repo
+import tracker
+import updater
 from conditions import Condition, ConditionEntry, IndicatorSpec
 from scanner import Scanner
 
@@ -26,15 +27,12 @@ def save_demo_locked_scan(db_path: str) -> str:
     conn = db.get_connection(db_path)
     try:
         scan_id = scans_repo.save_scan(
-            conn,
-            name="Momentum Test Scan",
+            conn, name="Momentum Test Scan",
             description="Demo scan: price above its 20-day EMA",
-            timeframe="Daily",
-            condition_set=_DEMO_CONDITION_SET,
-            is_locked=True,
-            is_tracked=True,
+            timeframe="Daily", condition_set=_DEMO_CONDITION_SET,
+            is_locked=True, is_tracked=True,
         )
-        return f"Saved 'Momentum Test Scan' (locked) as scan_id={scan_id}"
+        return f"Saved 'Momentum Test Scan' (locked, tracked) as scan_id={scan_id}"
     except scans_repo.ScanRepositoryError as exc:
         return f"ERROR: {exc}"
     finally:
@@ -47,7 +45,6 @@ def list_saved_scans_report(db_path: str, owner_mode: bool) -> str:
         records = scans_repo.list_scans(conn, owner_mode=owner_mode)
         if not records:
             return "No saved scans yet."
-
         lines = [f"Saved Scans (Owner Mode: {'ON' if owner_mode else 'OFF'})", "=" * 40]
         for r in records:
             lock_tag = "[LOCKED]" if r.is_locked else "[open]"
@@ -64,7 +61,7 @@ def list_saved_scans_report(db_path: str, owner_mode: bool) -> str:
 def run_saved_scan_report(db_path: str, name: str) -> str:
     conn = db.get_connection(db_path)
     try:
-        timeframe, condition_set = scans_repo.load_scan_for_execution(conn, name)
+        _, _, timeframe, condition_set = scans_repo.load_scan_for_execution(conn, name)
     except scans_repo.ScanRepositoryError as exc:
         conn.close()
         return f"ERROR: {exc}"
@@ -110,5 +107,87 @@ def is_owner_pin_set_check(db_path: str) -> bool:
     conn = db.get_connection(db_path)
     try:
         return settings_repo.is_owner_pin_set(conn)
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------
+# MILESTONE 4 - Research Engine
+# ------------------------------------------------------------
+
+def run_tracked_scans_and_update_report(db_path: str) -> str:
+    """
+    The 'daily update' sequence for Tracked scans: run every Tracked
+    scan, log any genuinely new matches as signals (duplicates
+    skipped), then mark-to-market every open signal across all scans
+    (price refresh, periods_elapsed, maturation, auto-close on exit).
+    """
+    conn = db.get_connection(db_path)
+    try:
+        tracked = scans_repo.list_tracked_scans(conn)
+        lines = [f"Tracked scans found: {len(tracked)}", ""]
+
+        for scan_id, name, scan_version, timeframe, condition_set in tracked:
+            scanner = Scanner(db_path)
+            try:
+                summary = scanner.run_scan(condition_set, timeframe)
+            finally:
+                scanner.close()
+
+            track_result = tracker.track_new_matches(conn, scan_id, scan_version, summary)
+            lines.append(f"[{name}] matched={summary.matched_count} "
+                         f"new_signals={len(track_result.logged)} "
+                         f"already_open={len(track_result.skipped_duplicate)}")
+            if track_result.logged:
+                lines.append(f"    New: {', '.join(track_result.logged)}")
+
+        lines.append("")
+        lines.append("--- Mark-to-market: updating all open signals ---")
+        update_result = updater.update_open_signals(conn)
+        lines.append(f"Updated: {update_result.updated}")
+        lines.append(f"Closed this run: {update_result.closed if update_result.closed else 'none'}")
+        lines.append(f"Newly matured (>=6 periods): {update_result.matured if update_result.matured else 'none'}")
+        if update_result.failed:
+            lines.append(f"Failed to update: {update_result.failed}")
+
+        return "\n".join(lines)
+    finally:
+        conn.close()
+
+
+def list_signals_report(db_path: str, scan_name: str) -> str:
+    conn = db.get_connection(db_path)
+    try:
+        cur = conn.execute("SELECT scan_id FROM scans WHERE name = ?", (scan_name,))
+        row = cur.fetchone()
+        if row is None:
+            return f"ERROR: No saved scan named '{scan_name}'"
+        scan_id = row[0]
+
+        cur = conn.execute(
+            """
+            SELECT symbol, status, entry_date, entry_price, current_price,
+                   exit_date, exit_price, periods_elapsed, is_matured,
+                   round(return_pct, 2), round(max_gain_pct, 2), round(max_drawdown_pct, 2)
+            FROM signals WHERE scan_id = ? ORDER BY entry_date DESC
+            """,
+            (scan_id,),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return f"No signals tracked yet for '{scan_name}'."
+
+        lines = [f"Signals for '{scan_name}' ({len(rows)} total)", "=" * 40]
+        for (symbol, status, entry_date, entry_price, current_price, exit_date,
+             exit_price, periods, matured, ret, max_gain, max_dd) in rows:
+            matured_tag = "matured" if matured else "immature"
+            lines.append(f"\n{symbol}  [{status}]  ({matured_tag}, {periods} periods)")
+            lines.append(f"  Entry: {entry_date} @ {entry_price:.2f}")
+            if status == "CLOSED":
+                lines.append(f"  Exit:  {exit_date} @ {exit_price:.2f}")
+            else:
+                lines.append(f"  Current: {current_price:.2f}")
+            lines.append(f"  Return: {ret}%  MaxGain: {max_gain}%  MaxDrawdown: {max_dd}%")
+        return "\n".join(lines)
     finally:
         conn.close()
