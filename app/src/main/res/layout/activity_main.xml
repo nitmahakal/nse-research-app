@@ -23,13 +23,63 @@
             android:text="Run Test Scan (Milestone 2)" />
 
         <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:textStyle="bold"
+            android:text="Milestone 3 - Saved Scans + Owner Mode" />
+
+        <Button
+            android:id="@+id/saveLockedScanButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Save Locked Test Scan" />
+
+        <Button
+            android:id="@+id/listScansButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="List Saved Scans" />
+
+        <Button
+            android:id="@+id/runSavedScanButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Run Saved Scan" />
+
+        <Button
+            android:id="@+id/setPinButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Set Owner PIN" />
+
+        <Button
+            android:id="@+id/ownerModeButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Unlock Owner Mode" />
+
+        <TextView
+            android:id="@+id/ownerModeStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textStyle="italic"
+            android:text="Owner Mode: OFF" />
+
+        <TextView
             android:id="@+id/resultText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:fontFamily="monospace"
             android:textIsSelectable="true"
-            android:text="Tap the button above to test pandas, numpy, yfinance, and sqlite3 on this device." />
+            android:text="Tap a button above to test the app." />
 
     </LinearLayout>
 
