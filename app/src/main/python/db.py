@@ -58,6 +58,21 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_scan ON signals(scan_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)")
+
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS rating_history (
+            rating_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id INTEGER NOT NULL,
+            scan_version INTEGER NOT NULL,
+            calculated_at TEXT NOT NULL,
+            matured_signal_count INTEGER NOT NULL,
+            win_rate REAL NOT NULL,
+            avg_gain_pct REAL NOT NULL,
+            avg_drawdown_pct REAL NOT NULL,
+            rating_score REAL NOT NULL,
+            confidence REAL NOT NULL,
+            UNIQUE(scan_id, calculated_at))"""
+    )
     conn.commit()
 
 
