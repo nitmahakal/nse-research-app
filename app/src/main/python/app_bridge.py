@@ -8,6 +8,7 @@ import scans_repository as scans_repo
 import settings_repository as settings_repo
 import tracker
 import updater
+import rating
 from conditions import Condition, ConditionEntry, IndicatorSpec
 from scanner import Scanner
 
@@ -116,12 +117,6 @@ def is_owner_pin_set_check(db_path: str) -> bool:
 # ------------------------------------------------------------
 
 def run_tracked_scans_and_update_report(db_path: str) -> str:
-    """
-    The 'daily update' sequence for Tracked scans: run every Tracked
-    scan, log any genuinely new matches as signals (duplicates
-    skipped), then mark-to-market every open signal across all scans
-    (price refresh, periods_elapsed, maturation, auto-close on exit).
-    """
     conn = db.get_connection(db_path)
     try:
         tracked = scans_repo.list_tracked_scans(conn)
@@ -149,6 +144,52 @@ def run_tracked_scans_and_update_report(db_path: str) -> str:
         lines.append(f"Newly matured (>=6 periods): {update_result.matured if update_result.matured else 'none'}")
         if update_result.failed:
             lines.append(f"Failed to update: {update_result.failed}")
+
+        lines.append("")
+        lines.append("--- Recomputing ratings for tracked scans ---")
+        for scan_id, name, scan_version, timeframe, condition_set in tracked:
+            rating_result = rating.compute_rating(conn, scan_id, scan_version)
+            rating.save_rating_snapshot(conn, rating_result)
+            lines.append(
+                f"[{name}] rating={rating_result.rating_score:.2f}/10 "
+                f"(confidence={rating_result.confidence:.2f}, "
+                f"matured_signals={rating_result.matured_signal_count})"
+            )
+
+        return "\n".join(lines)
+    finally:
+        conn.close()
+
+
+def get_rating_report(db_path: str, scan_name: str) -> str:
+    conn = db.get_connection(db_path)
+    try:
+        cur = conn.execute("SELECT scan_id, scan_version FROM scans WHERE name = ?", (scan_name,))
+        row = cur.fetchone()
+        if row is None:
+            return f"ERROR: No saved scan named '{scan_name}'"
+        scan_id, scan_version = row
+
+        r = rating.compute_rating(conn, scan_id, scan_version)
+        lines = [f"Rating for '{scan_name}'", "=" * 40]
+        lines.append(f"Rating Score: {r.rating_score:.2f} / 10  ({r.star_rating:.2f} stars)")
+        lines.append(f"Confidence: {r.confidence:.2f} (based on {r.matured_signal_count} matured signals)")
+        if r.raw_score is not None:
+            lines.append(f"Raw score (before confidence shrinkage): {r.raw_score:.2f} / 10")
+            lines.append(f"Win Rate: {r.win_rate * 100:.1f}%")
+            lines.append(f"Avg Max Gain: {r.avg_gain_pct:.2f}%")
+            lines.append(f"Avg Max Drawdown: {r.avg_drawdown_pct:.2f}%")
+        else:
+            lines.append("No matured signals yet - rating is a neutral placeholder.")
+
+        lines.append("")
+        lines.append("Rating trend (by day):")
+        trend = rating.get_rating_trend(conn, scan_id)
+        if trend:
+            for calculated_at, score, confidence, count in trend:
+                lines.append(f"  {calculated_at}: {score:.2f}/10 (confidence={confidence:.2f}, n={count})")
+        else:
+            lines.append("  (no history yet - run Daily Update to record the first snapshot)")
 
         return "\n".join(lines)
     finally:
