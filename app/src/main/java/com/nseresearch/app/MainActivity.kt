@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity() {
         val ownerModeButton = findViewById<Button>(R.id.ownerModeButton)
         val dailyUpdateButton = findViewById<Button>(R.id.dailyUpdateButton)
         val listSignalsButton = findViewById<Button>(R.id.listSignalsButton)
+        val showRatingButton = findViewById<Button>(R.id.showRatingButton)
 
         fun refreshOwnerModeStatus() {
             ownerModeStatus.text = "Owner Mode: ${if (ownerModeUnlocked) "ON" else "OFF"}"
@@ -168,6 +169,19 @@ class MainActivity : AppCompatActivity() {
                 val module = python.getModule("app_bridge")
                 val result: PyObject = module.callAttr(
                     "list_signals_report", dbPath, "Momentum Test Scan"
+                )
+                resultView.text = result.toString()
+            } catch (e: Exception) {
+                resultView.text = "ERROR:\n${e.message}"
+            }
+        }
+
+        showRatingButton.setOnClickListener {
+            resultView.text = "Computing rating..."
+            try {
+                val module = python.getModule("app_bridge")
+                val result: PyObject = module.callAttr(
+                    "get_rating_report", dbPath, "Momentum Test Scan"
                 )
                 resultView.text = result.toString()
             } catch (e: Exception) {
