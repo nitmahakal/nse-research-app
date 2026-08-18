@@ -108,6 +108,42 @@
             android:text="Show Scan Rating" />
 
         <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:textStyle="bold"
+            android:text="Milestone 6 - Background Automation" />
+
+        <Button
+            android:id="@+id/scheduleAutoUpdateButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Schedule Daily Auto-Update" />
+
+        <Button
+            android:id="@+id/cancelAutoUpdateButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Cancel Daily Auto-Update" />
+
+        <Button
+            android:id="@+id/testWorkerNowButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Test: Run Update via WorkManager Now" />
+
+        <TextView
+            android:id="@+id/autoUpdateStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textStyle="italic"
+            android:text="Auto-Update: not scheduled" />
+
+        <TextView
             android:id="@+id/resultText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
