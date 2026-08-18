@@ -17,6 +17,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ScannerActivity"
+            android:exported="false"
+            android:label="Build a Scan" />
+
     </application>
 
 </manifest>
