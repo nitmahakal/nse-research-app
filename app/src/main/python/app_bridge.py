@@ -232,3 +232,83 @@ def list_signals_report(db_path: str, scan_name: str) -> str:
         return "\n".join(lines)
     finally:
         conn.close()
+
+
+# ------------------------------------------------------------
+# MILESTONE 7 - Scanner screen (build-your-own condition sets)
+# ------------------------------------------------------------
+
+def build_and_validate_condition_json(
+    left_name: str, left_params_json: str, comparator: str,
+    tolerance_pct: str, right_name: str, right_params_json: str,
+) -> str:
+    import json
+    try:
+        left_params = json.loads(left_params_json)
+        right_params = json.loads(right_params_json)
+        left = IndicatorSpec(name=left_name, params=left_params)
+        right = IndicatorSpec(name=right_name, params=right_params)
+        tol = float(tolerance_pct) if tolerance_pct not in (None, "", "null") else None
+        cond = Condition(left=left, comparator=comparator, right=right, tolerance_pct=tol)
+        return json.dumps(cond.to_dict())
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def describe_condition_set_json(condition_set_json: str) -> str:
+    import json
+    from conditions import condition_set_label
+    try:
+        data = json.loads(condition_set_json)
+        condition_set = [ConditionEntry.from_dict(d) for d in data]
+        return condition_set_label(condition_set)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def run_ad_hoc_scan_report(db_path: str, timeframe: str, condition_set_json: str) -> str:
+    import json
+    try:
+        data = json.loads(condition_set_json)
+        condition_set = [ConditionEntry.from_dict(d) for d in data]
+    except Exception as exc:
+        return f"ERROR: invalid condition set ({exc})"
+
+    scanner = Scanner(db_path)
+    try:
+        summary = scanner.run_scan(condition_set, timeframe)
+    finally:
+        scanner.close()
+
+    lines = [f"Timeframe: {timeframe}",
+             f"Matched: {summary.matched_count} / {summary.total_symbols} scanned", ""]
+    if summary.matches:
+        for m in summary.matches:
+            values_str = ", ".join(f"{k}={v:.2f}" for k, v in m.values.items())
+            lines.append(f"  {m.symbol}  [{m.timeframe}]  Close={m.close:.2f}  {values_str}")
+    else:
+        lines.append("No matches.")
+    return "\n".join(lines)
+
+
+def save_new_scan_report(
+    db_path: str, name: str, description: str, timeframe: str,
+    condition_set_json: str, is_locked: bool, is_tracked: bool,
+) -> str:
+    import json
+    try:
+        data = json.loads(condition_set_json)
+        condition_set = [ConditionEntry.from_dict(d) for d in data]
+    except Exception as exc:
+        return f"ERROR: invalid condition set ({exc})"
+
+    conn = db.get_connection(db_path)
+    try:
+        scan_id = scans_repo.save_scan(
+            conn, name, description, timeframe, condition_set, is_locked, is_tracked
+        )
+        return f"Saved scan '{name}' as scan_id={scan_id}"
+    except scans_repo.ScanRepositoryError as exc:
+        return f"ERROR: {exc}"
+    finally:
+        conn.close()
