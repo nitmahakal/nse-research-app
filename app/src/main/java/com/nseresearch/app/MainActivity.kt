@@ -7,9 +7,16 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -37,6 +44,12 @@ class MainActivity : AppCompatActivity() {
         val dailyUpdateButton = findViewById<Button>(R.id.dailyUpdateButton)
         val listSignalsButton = findViewById<Button>(R.id.listSignalsButton)
         val showRatingButton = findViewById<Button>(R.id.showRatingButton)
+        val scheduleAutoUpdateButton = findViewById<Button>(R.id.scheduleAutoUpdateButton)
+        val cancelAutoUpdateButton = findViewById<Button>(R.id.cancelAutoUpdateButton)
+        val testWorkerNowButton = findViewById<Button>(R.id.testWorkerNowButton)
+        val autoUpdateStatus = findViewById<TextView>(R.id.autoUpdateStatus)
+
+        val dailyUpdateWorkName = "daily_update"
 
         fun refreshOwnerModeStatus() {
             ownerModeStatus.text = "Owner Mode: ${if (ownerModeUnlocked) "ON" else "OFF"}"
@@ -190,5 +203,47 @@ class MainActivity : AppCompatActivity() {
         }
 
         refreshOwnerModeStatus()
+
+        scheduleAutoUpdateButton.setOnClickListener {
+            val request = PeriodicWorkRequestBuilder<DailyUpdateWorker>(24, TimeUnit.HOURS)
+                .setConstraints(Constraints.Builder().build())
+                .build()
+            WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+                dailyUpdateWorkName,
+                ExistingPeriodicWorkPolicy.KEEP,
+                request
+            )
+            autoUpdateStatus.text = "Auto-Update: scheduled (runs roughly every 24h in the background)"
+            resultView.text = "Daily auto-update scheduled. It will keep running even if you close the app."
+        }
+
+        cancelAutoUpdateButton.setOnClickListener {
+            WorkManager.getInstance(applicationContext).cancelUniqueWork(dailyUpdateWorkName)
+            autoUpdateStatus.text = "Auto-Update: not scheduled"
+            resultView.text = "Daily auto-update cancelled."
+        }
+
+        testWorkerNowButton.setOnClickListener {
+            resultView.text = "Running update via WorkManager (background thread)..."
+            val request = OneTimeWorkRequestBuilder<DailyUpdateWorker>().build()
+            val workManager = WorkManager.getInstance(applicationContext)
+            workManager.enqueue(request)
+            workManager.getWorkInfoByIdLiveData(request.id).observe(this) { info ->
+                if (info == null) return@observe
+                when (info.state) {
+                    WorkInfo.State.SUCCEEDED -> {
+                        val report = info.outputData.getString("report") ?: "(no report text)"
+                        resultView.text = "WorkManager run SUCCEEDED:\n\n$report"
+                    }
+                    WorkInfo.State.FAILED -> {
+                        resultView.text = "WorkManager run FAILED. Check Logcat for 'DailyUpdateWorker' for details."
+                    }
+                    WorkInfo.State.RUNNING -> {
+                        resultView.text = "WorkManager run in progress..."
+                    }
+                    else -> { /* ENQUEUED, BLOCKED, CANCELLED - no UI change needed */ }
+                }
+            }
+        }
     }
 }
