@@ -1,6 +1,7 @@
 package com.nseresearch.app
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
 import android.widget.Button
@@ -33,6 +34,7 @@ class MainActivity : AppCompatActivity() {
         val dbPath = filesDir.absolutePath + "/nse_research.db"
 
         val resultView = findViewById<TextView>(R.id.resultText)
+        val openScannerButton = findViewById<Button>(R.id.openScannerButton)
         val ownerModeStatus = findViewById<TextView>(R.id.ownerModeStatus)
         val runButton = findViewById<Button>(R.id.runTestButton)
         val runScanButton = findViewById<Button>(R.id.runScanButton)
@@ -203,6 +205,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         refreshOwnerModeStatus()
+
+        openScannerButton.setOnClickListener {
+            startActivity(Intent(this, ScannerActivity::class.java))
+        }
 
         scheduleAutoUpdateButton.setOnClickListener {
             val request = PeriodicWorkRequestBuilder<DailyUpdateWorker>(24, TimeUnit.HOURS)
