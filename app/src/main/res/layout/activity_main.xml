@@ -10,6 +10,12 @@
         android:padding="16dp">
 
         <Button
+            android:id="@+id/openScannerButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Milestone 7: Build a Scan (tap-based)" />
+
+        <Button
             android:id="@+id/runTestButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
