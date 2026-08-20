@@ -117,6 +117,12 @@ def is_owner_pin_set_check(db_path: str) -> bool:
 # ------------------------------------------------------------
 
 def run_tracked_scans_and_update_report(db_path: str) -> str:
+    """
+    The 'daily update' sequence for Tracked scans: run every Tracked
+    scan, log any genuinely new matches as signals (duplicates
+    skipped), then mark-to-market every open signal across all scans
+    (price refresh, periods_elapsed, maturation, auto-close on exit).
+    """
     conn = db.get_connection(db_path)
     try:
         tracked = scans_repo.list_tracked_scans(conn)
@@ -242,6 +248,14 @@ def build_and_validate_condition_json(
     left_name: str, left_params_json: str, comparator: str,
     tolerance_pct: str, right_name: str, right_params_json: str,
 ) -> str:
+    """
+    Builds ONE Condition from raw UI input and returns its JSON dict
+    on success, or "ERROR: ..." on any validation failure. This is the
+    single point where Kotlin's tap-built condition gets validated by
+    the same rules the rest of the app already trusts (IndicatorSpec/
+    Condition's own __post_init__ checks) - no duplicated validation
+    logic on the Kotlin side.
+    """
     import json
     try:
         left_params = json.loads(left_params_json)
@@ -256,6 +270,7 @@ def build_and_validate_condition_json(
 
 
 def describe_condition_set_json(condition_set_json: str) -> str:
+    """Human-readable one-line summary of a condition set, for live preview in the UI."""
     import json
     from conditions import condition_set_label
     try:
@@ -267,6 +282,7 @@ def describe_condition_set_json(condition_set_json: str) -> str:
 
 
 def run_ad_hoc_scan_report(db_path: str, timeframe: str, condition_set_json: str) -> str:
+    """Runs a scan built live in the UI (not yet saved) and returns a text report."""
     import json
     try:
         data = json.loads(condition_set_json)
@@ -312,3 +328,39 @@ def save_new_scan_report(
         return f"ERROR: {exc}"
     finally:
         conn.close()
+
+
+# ------------------------------------------------------------
+# MILESTONE 8 - Real Data Engine (yfinance -> SQLite)
+# ------------------------------------------------------------
+
+def update_real_data_report(db_path: str, symbols_csv_path: str) -> str:
+    """
+    Downloads/refreshes real NSE daily closes for every symbol in the
+    bundled nse_symbols.csv (~2087 stocks). Safe to call repeatedly -
+    already up-to-date symbols are skipped automatically. First run
+    covers the full universe so it will take noticeably longer than
+    later runs, which are incremental-only for most symbols.
+    """
+    import data_engine
+    symbols = data_engine.load_symbol_list(symbols_csv_path)
+    result = data_engine.update_symbols(db_path, symbols)
+
+    lines = [
+        "Real Data Update (Full NSE List)",
+        "=" * 40,
+        f"Total symbols: {result['total']}",
+        f"Needed full download: {result['full_download']}",
+        f"Needed incremental update: {result['incremental']}",
+        f"Succeeded: {len(result['succeeded'])}",
+        f"Failed (after retry): {len(result['failed'])}",
+    ]
+    if result["failed"]:
+        shown = result["failed"][:20]
+        lines.append(f"Failed symbols (first 20): {', '.join(shown)}")
+        if len(result["failed"]) > 20:
+            lines.append(f"...and {len(result['failed']) - 20} more")
+    if result["succeeded"]:
+        lines.append("")
+        lines.append(f"Sample of updated symbols: {', '.join(result['succeeded'][:5])}")
+    return "\n".join(lines)
