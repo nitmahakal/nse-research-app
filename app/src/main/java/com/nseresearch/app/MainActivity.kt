@@ -1,6 +1,7 @@
 package com.nseresearch.app
 
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
@@ -10,6 +11,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
@@ -17,7 +19,25 @@ import androidx.work.WorkManager
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
+
+/**
+ * Copies the bundled nse_symbols.csv asset into internal storage,
+ * overwriting any previous copy, so Python (which can't read directly
+ * from the APK's compressed assets) always has a real file path to
+ * the latest bundled symbol list.
+ */
+fun copySymbolsAsset(context: Context): String {
+    val destFile = File(context.filesDir, "nse_symbols.csv")
+    context.assets.open("nse_symbols.csv").use { input ->
+        FileOutputStream(destFile).use { output ->
+            input.copyTo(output)
+        }
+    }
+    return destFile.absolutePath
+}
 
 class MainActivity : AppCompatActivity() {
 
@@ -32,9 +52,11 @@ class MainActivity : AppCompatActivity() {
         }
         val python = Python.getInstance()
         val dbPath = filesDir.absolutePath + "/nse_research.db"
+        copySymbolsAsset(this)
 
         val resultView = findViewById<TextView>(R.id.resultText)
         val openScannerButton = findViewById<Button>(R.id.openScannerButton)
+        val updateRealDataButton = findViewById<Button>(R.id.updateRealDataButton)
         val ownerModeStatus = findViewById<TextView>(R.id.ownerModeStatus)
         val runButton = findViewById<Button>(R.id.runTestButton)
         val runScanButton = findViewById<Button>(R.id.runScanButton)
@@ -208,6 +230,32 @@ class MainActivity : AppCompatActivity() {
 
         openScannerButton.setOnClickListener {
             startActivity(Intent(this, ScannerActivity::class.java))
+        }
+
+        updateRealDataButton.setOnClickListener {
+            resultView.text = "Downloading real NSE data (Nifty 50)... this can take a minute or two."
+            val request = OneTimeWorkRequestBuilder<UpdateRealDataWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+            val workManager = WorkManager.getInstance(applicationContext)
+            workManager.enqueue(request)
+            workManager.getWorkInfoByIdLiveData(request.id).observe(this) { info ->
+                if (info == null) return@observe
+                when (info.state) {
+                    WorkInfo.State.SUCCEEDED -> {
+                        val report = info.outputData.getString("report") ?: "(no report text)"
+                        resultView.text = "Real data update SUCCEEDED:\n\n$report"
+                    }
+                    WorkInfo.State.FAILED -> {
+                        val report = info.outputData.getString("report") ?: "(no error details)"
+                        resultView.text = "Real data update FAILED:\n\n$report"
+                    }
+                    WorkInfo.State.RUNNING -> {
+                        resultView.text = "Downloading... (this can take a minute or two)"
+                    }
+                    else -> { /* ENQUEUED, BLOCKED, CANCELLED - no UI change needed */ }
+                }
+            }
         }
 
         scheduleAutoUpdateButton.setOnClickListener {
