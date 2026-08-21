@@ -16,6 +16,13 @@
             android:text="Milestone 7: Build a Scan (tap-based)" />
 
         <Button
+            android:id="@+id/updateRealDataButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Milestone 8: Update Real NSE Data (Full List)" />
+
+        <Button
             android:id="@+id/runTestButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
