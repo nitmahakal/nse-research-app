@@ -88,7 +88,7 @@ def _download_chunk_raw(tickers: List[str], start: Optional[str], period: Option
         return yf.download(
             tickers=tickers, start=start, period=period if start is None else None,
             interval="1d", group_by="ticker", threads=True, progress=False,
-            auto_adjust=False, actions=False,
+            auto_adjust=False, actions=False, timeout=15,
         )
     except Exception:
         return None
@@ -139,7 +139,8 @@ def save_symbol_rows(conn, symbol: str, new_df: pd.DataFrame) -> None:
 
 
 def _process_group(conn, group_symbols: List[str], start_dates: Optional[Dict[str, str]],
-                    succeeded: List[str], failed: List[str]) -> None:
+                    succeeded: List[str], failed: List[str],
+                    on_progress=None, total_for_progress: int = 0) -> None:
     for chunk in _chunked(group_symbols, CHUNK_SIZE):
         if start_dates is not None:
             dates = [start_dates[s] for s in chunk if s in start_dates]
@@ -152,33 +153,47 @@ def _process_group(conn, group_symbols: List[str], start_dates: Optional[Dict[st
         raw = _download_chunk_raw(chunk, start=start_arg, period=period_arg)
         if raw is None:
             failed.extend(chunk)
-            continue
+        else:
+            for symbol in chunk:
+                new_data = extract_symbol_frame(raw, symbol, len(chunk))
+                if new_data is None or new_data.empty:
+                    failed.append(symbol)
+                    continue
+                try:
+                    save_symbol_rows(conn, symbol, new_data)
+                    succeeded.append(symbol)
+                except Exception:
+                    failed.append(symbol)
 
-        for symbol in chunk:
-            new_data = extract_symbol_frame(raw, symbol, len(chunk))
-            if new_data is None or new_data.empty:
-                failed.append(symbol)
-                continue
+        if on_progress is not None:
+            done = len(succeeded) + len(failed)
             try:
-                save_symbol_rows(conn, symbol, new_data)
-                succeeded.append(symbol)
+                on_progress.onProgress(done, total_for_progress)
             except Exception:
-                failed.append(symbol)
+                pass  # progress reporting must never crash the actual download
 
         time.sleep(1.0)
 
 
-def update_symbols(db_path: str, symbols: List[str]) -> Dict:
+def update_symbols(db_path: str, symbols: List[str], on_progress=None) -> Dict:
+    """
+    on_progress, if given, is a Kotlin callback object with a method
+    onProgress(done: Int, total: Int), called after every chunk so the
+    UI can show real progress instead of a silent wait.
+    """
     conn = db.get_connection(db_path)
     try:
         full_download, incremental = _classify_symbols(conn, symbols)
         succeeded: List[str] = []
         failed: List[str] = []
+        total = len(full_download) + len(incremental)
 
         if full_download:
-            _process_group(conn, full_download, None, succeeded, failed)
+            _process_group(conn, full_download, None, succeeded, failed,
+                            on_progress=on_progress, total_for_progress=total)
         if incremental:
-            _process_group(conn, list(incremental.keys()), incremental, succeeded, failed)
+            _process_group(conn, list(incremental.keys()), incremental, succeeded, failed,
+                            on_progress=on_progress, total_for_progress=total)
 
         if failed:
             still_failed: List[str] = []
