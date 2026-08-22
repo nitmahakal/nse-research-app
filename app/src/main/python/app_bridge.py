@@ -334,17 +334,19 @@ def save_new_scan_report(
 # MILESTONE 8 - Real Data Engine (yfinance -> SQLite)
 # ------------------------------------------------------------
 
-def update_real_data_report(db_path: str, symbols_csv_path: str) -> str:
+def update_real_data_report(db_path: str, symbols_csv_path: str, on_progress=None) -> str:
     """
     Downloads/refreshes real NSE daily closes for every symbol in the
     bundled nse_symbols.csv (~2087 stocks). Safe to call repeatedly -
-    already up-to-date symbols are skipped automatically. First run
-    covers the full universe so it will take noticeably longer than
-    later runs, which are incremental-only for most symbols.
+    already up-to-date symbols are skipped automatically.
+
+    on_progress, if given, is a Kotlin callback object with method
+    onProgress(done, total) - called after every chunk of symbols so
+    the UI can show real "X / Y" progress instead of a silent wait.
     """
     import data_engine
     symbols = data_engine.load_symbol_list(symbols_csv_path)
-    result = data_engine.update_symbols(db_path, symbols)
+    result = data_engine.update_symbols(db_path, symbols, on_progress=on_progress)
 
     lines = [
         "Real Data Update (Full NSE List)",
