@@ -8,14 +8,13 @@ import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 
-/**
- * Downloads real NSE price data via yfinance. This MUST run off the
- * main thread (Android throws NetworkOnMainThreadException otherwise)
- * - WorkManager's Worker.doWork() already runs on a background thread,
- * so this reuses the exact same pattern as DailyUpdateWorker rather
- * than introducing new threading code.
- */
 class UpdateRealDataWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
+
+    inner class ProgressReporter {
+        fun onProgress(done: Int, total: Int) {
+            setProgressAsync(workDataOf("done" to done, "total" to total))
+        }
+    }
 
     override fun doWork(): Result {
         return try {
@@ -27,7 +26,9 @@ class UpdateRealDataWorker(context: Context, params: WorkerParameters) : Worker(
 
             val module = python.getModule("app_bridge")
             val symbolsPath = copySymbolsAsset(applicationContext)
-            val report: PyObject = module.callAttr("update_real_data_report", dbPath, symbolsPath)
+            val report: PyObject = module.callAttr(
+                "update_real_data_report", dbPath, symbolsPath, ProgressReporter()
+            )
             val reportText = report.toString()
 
             android.util.Log.i("UpdateRealDataWorker", reportText)
