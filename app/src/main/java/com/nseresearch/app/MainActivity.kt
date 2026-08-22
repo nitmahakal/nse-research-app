@@ -23,12 +23,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
-/**
- * Copies the bundled nse_symbols.csv asset into internal storage,
- * overwriting any previous copy, so Python (which can't read directly
- * from the APK's compressed assets) always has a real file path to
- * the latest bundled symbol list.
- */
 fun copySymbolsAsset(context: Context): String {
     val destFile = File(context.filesDir, "nse_symbols.csv")
     context.assets.open("nse_symbols.csv").use { input ->
@@ -233,7 +227,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateRealDataButton.setOnClickListener {
-            resultView.text = "Downloading real NSE data (Nifty 50)... this can take a minute or two."
+            resultView.text = "Starting download..."
             val request = OneTimeWorkRequestBuilder<UpdateRealDataWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
@@ -251,7 +245,13 @@ class MainActivity : AppCompatActivity() {
                         resultView.text = "Real data update FAILED:\n\n$report"
                     }
                     WorkInfo.State.RUNNING -> {
-                        resultView.text = "Downloading... (this can take a minute or two)"
+                        val done = info.progress.getInt("done", -1)
+                        val total = info.progress.getInt("total", -1)
+                        resultView.text = if (done >= 0 && total > 0) {
+                            "Downloading... $done / $total symbols done"
+                        } else {
+                            "Downloading... (starting up)"
+                        }
                     }
                     else -> { /* ENQUEUED, BLOCKED, CANCELLED - no UI change needed */ }
                 }
