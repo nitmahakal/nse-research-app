@@ -66,12 +66,22 @@ def _most_recent_expected_trading_day() -> str:
 
 
 def _classify_symbols(conn, symbols: List[str]) -> Tuple[List[str], Dict[str, str]]:
-    """Returns (full_download_symbols, {symbol: last_date} for incremental)."""
+    """
+    Returns (full_download_symbols, {symbol: last_date} for incremental).
+
+    Uses ONE bulk query for every symbol's last date instead of one
+    query per symbol - the exact same class of fix as the Colab
+    downloader's database_index.parquet: per-item database round
+    trips are the bottleneck, not the actual work.
+    """
+    cur = conn.execute("SELECT symbol, MAX(date) FROM prices GROUP BY symbol")
+    last_dates: Dict[str, str] = {row[0]: row[1] for row in cur.fetchall()}
+
     full_download: List[str] = []
     incremental: Dict[str, str] = {}
     expected = _most_recent_expected_trading_day()
     for symbol in symbols:
-        last_date = _get_last_date(conn, symbol)
+        last_date = last_dates.get(symbol)
         if last_date is None:
             full_download.append(symbol)
         elif last_date < expected:
