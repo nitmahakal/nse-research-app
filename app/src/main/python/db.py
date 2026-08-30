@@ -5,7 +5,12 @@ import pandas as pd
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    # timeout=30: wait up to 30s for a lock instead of failing instantly
+    # ("database is locked") - needed because a background download
+    # and a foreground scan can both touch the DB at overlapping times.
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     ensure_schema(conn)
     return conn
 
