@@ -247,10 +247,11 @@ class MainActivity : AppCompatActivity() {
                     WorkInfo.State.RUNNING -> {
                         val done = info.progress.getInt("done", -1)
                         val total = info.progress.getInt("total", -1)
+                        val phase = info.progress.getString("phase") ?: "Working..."
                         resultView.text = if (done >= 0 && total > 0) {
-                            "Downloading... $done / $total symbols done"
+                            "$phase\n($done / $total)"
                         } else {
-                            "Downloading... (starting up)"
+                            phase
                         }
                     }
                     else -> { /* ENQUEUED, BLOCKED, CANCELLED - no UI change needed */ }
