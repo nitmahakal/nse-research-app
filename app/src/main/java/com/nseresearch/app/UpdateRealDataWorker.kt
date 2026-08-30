@@ -11,8 +11,8 @@ import com.chaquo.python.android.AndroidPlatform
 class UpdateRealDataWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
 
     inner class ProgressReporter {
-        fun onProgress(done: Int, total: Int) {
-            setProgressAsync(workDataOf("done" to done, "total" to total))
+        fun onProgress(done: Int, total: Int, phase: String) {
+            setProgressAsync(workDataOf("done" to done, "total" to total, "phase" to phase))
         }
     }
 
