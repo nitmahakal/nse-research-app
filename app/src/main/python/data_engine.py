@@ -178,7 +178,7 @@ def _process_group(conn, group_symbols: List[str], start_dates: Optional[Dict[st
         if on_progress is not None:
             done = len(succeeded) + len(failed)
             try:
-                on_progress.onProgress(done, total_for_progress)
+                on_progress.onProgress(done, total_for_progress, f"Downloading ({done}/{total_for_progress})...")
             except Exception:
                 pass  # progress reporting must never crash the actual download
 
@@ -187,16 +187,26 @@ def _process_group(conn, group_symbols: List[str], start_dates: Optional[Dict[st
 
 def update_symbols(db_path: str, symbols: List[str], on_progress=None) -> Dict:
     """
-    on_progress, if given, is a Kotlin callback object with a method
-    onProgress(done: Int, total: Int), called after every chunk so the
-    UI can show real progress instead of a silent wait.
+    on_progress, if given, is a Kotlin callback object with method
+    onProgress(done: Int, total: Int, phase: String) - called at every
+    checkpoint (classify, each chunk, each retry) so the UI always
+    shows exactly what's happening, never a silent unexplained wait.
     """
+    def report(done, total, phase):
+        if on_progress is not None:
+            try:
+                on_progress.onProgress(done, total, phase)
+            except Exception:
+                pass
+
     conn = db.get_connection(db_path)
     try:
+        report(0, len(symbols), "Checking what needs updating...")
         full_download, incremental = _classify_symbols(conn, symbols)
         succeeded: List[str] = []
         failed: List[str] = []
         total = len(full_download) + len(incremental)
+        report(0, total, f"Found {len(full_download)} new, {len(incremental)} to refresh")
 
         if full_download:
             _process_group(conn, full_download, None, succeeded, failed,
@@ -207,7 +217,9 @@ def update_symbols(db_path: str, symbols: List[str], on_progress=None) -> Dict:
 
         if failed:
             still_failed: List[str] = []
-            for symbol in list(failed):
+            retry_total = len(failed)
+            for i, symbol in enumerate(list(failed)):
+                report(i, retry_total, f"Retrying failed symbols ({i}/{retry_total})...")
                 time.sleep(RETRY_DELAY_SECONDS)
                 raw = _download_chunk_raw([symbol], start=None, period="2y")
                 new_data = extract_symbol_frame(raw, symbol, 1) if raw is not None else None
@@ -220,6 +232,7 @@ def update_symbols(db_path: str, symbols: List[str], on_progress=None) -> Dict:
                 except Exception:
                     still_failed.append(symbol)
             failed = still_failed
+            report(len(succeeded), total, "Finishing up...")
 
         return {
             "total": len(symbols),
