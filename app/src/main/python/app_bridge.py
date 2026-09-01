@@ -117,12 +117,6 @@ def is_owner_pin_set_check(db_path: str) -> bool:
 # ------------------------------------------------------------
 
 def run_tracked_scans_and_update_report(db_path: str) -> str:
-    """
-    The 'daily update' sequence for Tracked scans: run every Tracked
-    scan, log any genuinely new matches as signals (duplicates
-    skipped), then mark-to-market every open signal across all scans
-    (price refresh, periods_elapsed, maturation, auto-close on exit).
-    """
     conn = db.get_connection(db_path)
     try:
         tracked = scans_repo.list_tracked_scans(conn)
@@ -248,14 +242,6 @@ def build_and_validate_condition_json(
     left_name: str, left_params_json: str, comparator: str,
     tolerance_pct: str, right_name: str, right_params_json: str,
 ) -> str:
-    """
-    Builds ONE Condition from raw UI input and returns its JSON dict
-    on success, or "ERROR: ..." on any validation failure. This is the
-    single point where Kotlin's tap-built condition gets validated by
-    the same rules the rest of the app already trusts (IndicatorSpec/
-    Condition's own __post_init__ checks) - no duplicated validation
-    logic on the Kotlin side.
-    """
     import json
     try:
         left_params = json.loads(left_params_json)
@@ -270,7 +256,6 @@ def build_and_validate_condition_json(
 
 
 def describe_condition_set_json(condition_set_json: str) -> str:
-    """Human-readable one-line summary of a condition set, for live preview in the UI."""
     import json
     from conditions import condition_set_label
     try:
@@ -282,7 +267,6 @@ def describe_condition_set_json(condition_set_json: str) -> str:
 
 
 def run_ad_hoc_scan_report(db_path: str, timeframe: str, condition_set_json: str) -> str:
-    """Runs a scan built live in the UI (not yet saved) and returns a text report."""
     import json
     try:
         data = json.loads(condition_set_json)
@@ -337,15 +321,31 @@ def save_new_scan_report(
 def update_real_data_report(db_path: str, symbols_csv_path: str, on_progress=None) -> str:
     """
     Downloads/refreshes real NSE daily closes for every symbol in the
-    bundled nse_symbols.csv (~2087 stocks). Safe to call repeatedly -
-    already up-to-date symbols are skipped automatically.
+    bundled nse_symbols.csv (~2087 stocks). Safe to call repeatedly.
 
     on_progress, if given, is a Kotlin callback object with method
-    onProgress(done, total) - called after every chunk of symbols so
-    the UI can show real "X / Y" progress instead of a silent wait.
+    onProgress(done, total, phase). Reports START BEFORE importing
+    yfinance (which can itself be slow the first time on Android) so
+    we can see exactly where time goes if it stalls.
     """
+    def report(done, total, phase):
+        if on_progress is not None:
+            try:
+                on_progress.onProgress(done, total, phase)
+            except Exception:
+                pass
+
+    report(0, 0, "Starting Python engine...")
+    import time as _time
+    _t0 = _time.time()
+
+    report(0, 0, "Loading yfinance (first time can be slow)...")
     import data_engine
+    report(0, 0, f"yfinance loaded in {_time.time() - _t0:.1f}s. Reading symbol list...")
+
     symbols = data_engine.load_symbol_list(symbols_csv_path)
+    report(0, len(symbols), f"Loaded {len(symbols)} symbols. Checking database...")
+
     result = data_engine.update_symbols(db_path, symbols, on_progress=on_progress)
 
     lines = [
