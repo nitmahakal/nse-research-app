@@ -1,31 +1,19 @@
-"""
-Real Data Engine - downloads actual NSE daily closes via yfinance,
-directly into the SQLite `prices` table.
+"""Raw market-data downloader/updater.
 
-Uses the exact same bug-safe per-symbol extraction pattern proven in
-the original Colab downloader: every symbol's data is looked up by
-its own explicit ticker key in a batch result, never by position.
-That discipline is what fixed the original "every file identical"
-bug early in this project, and it's preserved here on purpose.
-
-SYMBOL SOURCE: reads the real ~2087-symbol NSE equity list bundled
-into the app as an asset (nse_symbols.csv, copied to internal storage
-on launch) - not a live NSE website fetch. NSE's official CSV feed
-needs session cookies/browser-like headers to access reliably from a
-script, which is separate, riskier work, deliberately deferred. An
-auto-updating fetch can replace this file's source later without
-changing anything else in the Data Engine.
+IMPORTANT:
+Update does ZERO indicator/scanner calculations.
+It only downloads raw daily close data and stores it in SQLite.
 """
 
-import csv
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import yfinance as yf
 
 import db
+
 
 MAX_CANDLES = 2000
 CHUNK_SIZE = 50
@@ -33,213 +21,455 @@ MAX_RETRIES = 2
 RETRY_DELAY_SECONDS = 3.0
 
 
-def load_symbol_list(csv_path: str) -> List[str]:
-    """Reads SYMBOL column, appends .NS, de-duplicates, preserves order."""
-    symbols: List[str] = []
-    seen = set()
-    with open(csv_path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            raw = (row.get("SYMBOL") or "").strip().upper()
-            if not raw:
-                continue
-            if not raw.endswith(".NS"):
-                raw = f"{raw}.NS"
-            if raw not in seen:
-                seen.add(raw)
-                symbols.append(raw)
-    return symbols
+def load_symbol_list(symbols_csv_path: str) -> List[str]:
+    df = pd.read_csv(symbols_csv_path)
+
+    if "SYMBOL" not in df.columns:
+        raise ValueError("SYMBOL column not found in symbols CSV")
+
+    symbols = []
+
+    for value in df["SYMBOL"].dropna().astype(str):
+        symbol = value.strip().upper()
+
+        if not symbol:
+            continue
+
+        if not symbol.endswith(".NS"):
+            symbol = symbol + ".NS"
+
+        symbols.append(symbol)
+
+    return list(dict.fromkeys(symbols))
 
 
-def _get_last_date(conn, symbol: str) -> Optional[str]:
-    cur = conn.execute("SELECT MAX(date) FROM prices WHERE symbol = ?", (symbol,))
-    row = cur.fetchone()
-    return row[0] if row and row[0] else None
+def _normalise_date(value) -> Optional[pd.Timestamp]:
+    if value is None:
+        return None
+
+    try:
+        ts = pd.Timestamp(value)
+
+        if ts.tzinfo is not None:
+            ts = ts.tz_localize(None)
+
+        return ts.normalize()
+    except Exception:
+        return None
 
 
-def _most_recent_expected_trading_day() -> str:
-    today = datetime.now().date()
-    candidate = today
-    while candidate.weekday() >= 5:
-        candidate -= timedelta(days=1)
-    return candidate.isoformat()
+def _most_recent_expected_date() -> pd.Timestamp:
+    today = pd.Timestamp.now().normalize()
+
+    # Saturday/Sunday -> Friday
+    while today.weekday() >= 5:
+        today -= pd.Timedelta(days=1)
+
+    return today
 
 
-def _classify_symbols(conn, symbols: List[str]) -> Tuple[List[str], Dict[str, str]]:
-    """
-    Returns (full_download_symbols, {symbol: last_date} for incremental).
+def _classify_symbols(
+    conn,
+    symbols: List[str],
+) -> Tuple[List[str], List[str], Dict[str, str]]:
+    latest_dates = db.get_latest_dates(conn)
 
-    Uses ONE bulk query for every symbol's last date instead of one
-    query per symbol - the exact same class of fix as the Colab
-    downloader's database_index.parquet: per-item database round
-    trips are the bottleneck, not the actual work.
-    """
-    cur = conn.execute("SELECT symbol, MAX(date) FROM prices GROUP BY symbol")
-    last_dates: Dict[str, str] = {row[0]: row[1] for row in cur.fetchall()}
+    full_download = []
+    incremental = []
 
-    full_download: List[str] = []
-    incremental: Dict[str, str] = {}
-    expected = _most_recent_expected_trading_day()
     for symbol in symbols:
-        last_date = last_dates.get(symbol)
-        if last_date is None:
+        last_date = latest_dates.get(symbol)
+
+        if not last_date:
             full_download.append(symbol)
-        elif last_date < expected:
-            incremental[symbol] = last_date
-    return full_download, incremental
+            continue
+
+        last_ts = _normalise_date(last_date)
+        expected = _most_recent_expected_date()
+
+        if last_ts is None or last_ts < expected:
+            incremental.append(symbol)
+
+    return full_download, incremental, latest_dates
 
 
-def _chunked(items: List, size: int) -> List[List]:
-    return [items[i:i + size] for i in range(0, len(items), size)]
-
-
-def _download_chunk_raw(tickers: List[str], start: Optional[str], period: Optional[str]):
-    try:
-        return yf.download(
-            tickers=tickers, start=start, period=period if start is None else None,
-            interval="1d", group_by="ticker", threads=True, progress=False,
-            auto_adjust=False, actions=False, timeout=15,
-        )
-    except Exception:
-        return None
-
-
-def extract_symbol_frame(raw, symbol: str, chunk_size: int) -> Optional[pd.DataFrame]:
-    """
-    Bug-safe extraction: always looks up this symbol's data by its
-    own explicit ticker key - never by position, never reused across
-    symbols in the same chunk.
-    """
+def _extract_symbol_frame(
+    raw: pd.DataFrame,
+    symbol: str,
+) -> pd.DataFrame:
     if raw is None or raw.empty:
-        return None
+        return pd.DataFrame()
+
     try:
-        if chunk_size == 1 or not isinstance(raw.columns, pd.MultiIndex):
-            sub = raw
+        if isinstance(raw.columns, pd.MultiIndex):
+            if symbol in raw.columns.get_level_values(0):
+                frame = raw[symbol].copy()
+            elif symbol in raw.columns.get_level_values(1):
+                frame = raw.xs(symbol, axis=1, level=1).copy()
+            else:
+                return pd.DataFrame()
         else:
-            if symbol not in raw.columns.get_level_values(0):
-                return None
-            sub = raw[symbol]
-        if sub is None or sub.empty or "Close" not in sub.columns:
-            return None
-        sub = sub[["Close"]].copy().reset_index()
-        sub = sub.rename(columns={sub.columns[0]: "Date"})
-        sub["Date"] = pd.to_datetime(sub["Date"], errors="coerce")
-        sub["Close"] = pd.to_numeric(sub["Close"], errors="coerce")
-        sub = sub.dropna(subset=["Date", "Close"])
-        if sub.empty:
-            return None
-        if sub["Date"].dt.tz is not None:
-            sub["Date"] = sub["Date"].dt.tz_localize(None)
-        return sub[["Date", "Close"]]
+            frame = raw.copy()
+
+        if "Close" not in frame.columns:
+            return pd.DataFrame()
+
+        frame = frame[["Close"]].copy()
+        frame = frame.dropna(subset=["Close"])
+
+        frame.index = pd.to_datetime(frame.index)
+
+        if getattr(frame.index, "tz", None) is not None:
+            frame.index = frame.index.tz_localize(None)
+
+        frame.index = frame.index.normalize()
+
+        frame["Close"] = pd.to_numeric(
+            frame["Close"],
+            errors="coerce",
+        )
+
+        frame = frame.dropna(subset=["Close"])
+        frame = frame[~frame.index.duplicated(keep="last")]
+        frame = frame.sort_index()
+
+        return frame
+
     except Exception:
-        return None
+        return pd.DataFrame()
 
 
-def save_symbol_rows(conn, symbol: str, new_df: pd.DataFrame) -> None:
-    """Merges newly-fetched rows with whatever's already stored, dedupes, trims to MAX_CANDLES."""
-    existing = db.get_price_series(conn, symbol)
-    if not existing.empty:
-        combined = pd.concat([existing, new_df], ignore_index=True)
-        combined = combined.drop_duplicates(subset="Date", keep="last").sort_values("Date")
-        combined = combined.tail(MAX_CANDLES)
-    else:
-        combined = new_df.sort_values("Date")
-    rows = [(d.date().isoformat(), float(c)) for d, c in zip(combined["Date"], combined["Close"])]
-    db.insert_price_rows(conn, symbol, rows)
+def _download_chunk_raw(
+    tickers: List[str],
+    start: Optional[str] = None,
+    period: Optional[str] = None,
+) -> pd.DataFrame:
+    kwargs = {
+        "tickers": tickers,
+        "interval": "1d",
+        "group_by": "ticker",
+        "threads": True,
+        "progress": False,
+        "auto_adjust": False,
+        "actions": False,
+        "timeout": 15,
+    }
+
+    if start:
+        kwargs["start"] = start
+
+    if period:
+        kwargs["period"] = period
+
+    return yf.download(**kwargs)
 
 
-def _process_group(conn, group_symbols: List[str], start_dates: Optional[Dict[str, str]],
-                    succeeded: List[str], failed: List[str],
-                    on_progress=None, total_for_progress: int = 0) -> None:
-    for chunk in _chunked(group_symbols, CHUNK_SIZE):
-        if start_dates is not None:
-            dates = [start_dates[s] for s in chunk if s in start_dates]
-            start_arg = min(dates) if dates else None
-            period_arg = None
-        else:
-            start_arg = None
-            period_arg = "2y"  # 2 years of daily history is plenty for every indicator we support
+def _rows_from_frame(
+    symbol: str,
+    frame: pd.DataFrame,
+) -> List[Tuple[str, str, float]]:
+    rows = []
 
-        raw = _download_chunk_raw(chunk, start=start_arg, period=period_arg)
-        if raw is None:
-            failed.extend(chunk)
-        else:
+    if frame.empty:
+        return rows
+
+    for date, row in frame.iterrows():
+        close = row.get("Close")
+
+        if pd.isna(close):
+            continue
+
+        date_text = pd.Timestamp(date).strftime("%Y-%m-%d")
+
+        rows.append(
+            (
+                symbol,
+                date_text,
+                float(close),
+            )
+        )
+
+    return rows
+
+
+def _process_group(
+    conn,
+    symbols: List[str],
+    latest_dates: Dict[str, str],
+    mode: str,
+    on_progress: Optional[Callable[[int, int, str], None]],
+    done_before: int,
+    total: int,
+) -> Tuple[int, List[str]]:
+    succeeded = 0
+    failed = []
+
+    if not symbols:
+        return succeeded, failed
+
+    for start_index in range(0, len(symbols), CHUNK_SIZE):
+        chunk = symbols[start_index:start_index + CHUNK_SIZE]
+
+        # For incremental mode, use the earliest date in this chunk.
+        # This keeps one Yahoo request for the whole chunk.
+        start_date = None
+
+        if mode == "incremental":
+            dates = []
+
             for symbol in chunk:
-                new_data = extract_symbol_frame(raw, symbol, len(chunk))
-                if new_data is None or new_data.empty:
-                    failed.append(symbol)
-                    continue
-                try:
-                    save_symbol_rows(conn, symbol, new_data)
-                    succeeded.append(symbol)
-                except Exception:
-                    failed.append(symbol)
+                value = latest_dates.get(symbol)
+                ts = _normalise_date(value)
 
-        if on_progress is not None:
-            done = len(succeeded) + len(failed)
-            try:
-                on_progress.onProgress(done, total_for_progress, f"Downloading ({done}/{total_for_progress})...")
-            except Exception:
-                pass  # progress reporting must never crash the actual download
+                if ts is not None:
+                    dates.append(ts)
 
-        time.sleep(1.0)
+            if dates:
+                earliest = min(dates)
+                start_date = (
+                    earliest + pd.Timedelta(days=1)
+                ).strftime("%Y-%m-%d")
+
+        try:
+            if mode == "full":
+                raw = _download_chunk_raw(
+                    chunk,
+                    period="2y",
+                )
+            else:
+                raw = _download_chunk_raw(
+                    chunk,
+                    start=start_date,
+                )
+
+        except Exception:
+            raw = pd.DataFrame()
+
+        batch_rows = []
+        chunk_failed = []
+
+        for symbol in chunk:
+            frame = _extract_symbol_frame(raw, symbol)
+
+            if frame.empty:
+                chunk_failed.append(symbol)
+                continue
+
+            # Keep only data newer than the symbol's stored date.
+            if mode == "incremental":
+                last_date = _normalise_date(
+                    latest_dates.get(symbol)
+                )
+
+                if last_date is not None:
+                    frame = frame[
+                        frame.index > last_date
+                    ]
+
+            if frame.empty:
+                # Already up to date.
+                succeeded += 1
+                continue
+
+            rows = _rows_from_frame(symbol, frame)
+
+            if not rows:
+                chunk_failed.append(symbol)
+                continue
+
+            # Only keep the latest MAX_CANDLES rows for this symbol.
+            rows = rows[-MAX_CANDLES:]
+
+            batch_rows.extend(rows)
+
+        try:
+            if batch_rows:
+                db.insert_price_rows_batch(
+                    conn,
+                    batch_rows,
+                )
+        except Exception:
+            # If the batch insert fails, mark affected symbols as failed.
+            affected = {
+                row[0]
+                for row in batch_rows
+            }
+
+            chunk_failed.extend(
+                symbol
+                for symbol in affected
+                if symbol not in chunk_failed
+            )
+
+        failed.extend(
+            symbol
+            for symbol in chunk_failed
+            if symbol not in failed
+        )
+
+        succeeded += len(chunk) - len(chunk_failed)
+
+        processed = min(
+            done_before + start_index + len(chunk),
+            total,
+        )
+
+        if on_progress:
+            on_progress(
+                processed,
+                total,
+                f"{mode.title()} update: {processed}/{total}",
+            )
+
+    return succeeded, failed
 
 
-def update_symbols(db_path: str, symbols: List[str], on_progress=None) -> Dict:
-    """
-    on_progress, if given, is a Kotlin callback object with method
-    onProgress(done: Int, total: Int, phase: String) - called at every
-    checkpoint (classify, each chunk, each retry) so the UI always
-    shows exactly what's happening, never a silent unexplained wait.
-    """
-    def report(done, total, phase):
-        if on_progress is not None:
-            try:
-                on_progress.onProgress(done, total, phase)
-            except Exception:
-                pass
+def update_symbols(
+    db_path: str,
+    symbols: List[str],
+    on_progress: Optional[
+        Callable[[int, int, str], None]
+    ] = None,
+) -> Dict:
+    total = len(symbols)
+
+    if total == 0:
+        return {
+            "total": 0,
+            "full": 0,
+            "incremental": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "failed_symbols": [],
+        }
 
     conn = db.get_connection(db_path)
+
     try:
-        report(0, len(symbols), "Checking what needs updating...")
-        full_download, incremental = _classify_symbols(conn, symbols)
-        succeeded: List[str] = []
-        failed: List[str] = []
-        total = len(full_download) + len(incremental)
-        report(0, total, f"Found {len(full_download)} new, {len(incremental)} to refresh")
+        if on_progress:
+            on_progress(
+                0,
+                total,
+                "Checking existing database...",
+            )
 
-        if full_download:
-            _process_group(conn, full_download, None, succeeded, failed,
-                            on_progress=on_progress, total_for_progress=total)
-        if incremental:
-            _process_group(conn, list(incremental.keys()), incremental, succeeded, failed,
-                            on_progress=on_progress, total_for_progress=total)
+        # ONE bulk DB query.
+        full_symbols, incremental_symbols, latest_dates = (
+            _classify_symbols(
+                conn,
+                symbols,
+            )
+        )
 
-        if failed:
-            still_failed: List[str] = []
-            retry_total = len(failed)
-            for i, symbol in enumerate(list(failed)):
-                report(i, retry_total, f"Retrying failed symbols ({i}/{retry_total})...")
-                time.sleep(RETRY_DELAY_SECONDS)
-                raw = _download_chunk_raw([symbol], start=None, period="2y")
-                new_data = extract_symbol_frame(raw, symbol, 1) if raw is not None else None
-                if new_data is None or new_data.empty:
-                    still_failed.append(symbol)
+        succeeded = 0
+        failed_symbols = []
+
+        if on_progress:
+            on_progress(
+                0,
+                total,
+                (
+                    f"Ready: {len(full_symbols)} new, "
+                    f"{len(incremental_symbols)} incremental"
+                ),
+            )
+
+        # New symbols first.
+        full_succeeded, full_failed = _process_group(
+            conn=conn,
+            symbols=full_symbols,
+            latest_dates=latest_dates,
+            mode="full",
+            on_progress=on_progress,
+            done_before=0,
+            total=total,
+        )
+
+        succeeded += full_succeeded
+        failed_symbols.extend(full_failed)
+
+        # Incremental symbols.
+        incremental_succeeded, incremental_failed = (
+            _process_group(
+                conn=conn,
+                symbols=incremental_symbols,
+                latest_dates=latest_dates,
+                mode="incremental",
+                on_progress=on_progress,
+                done_before=len(full_symbols),
+                total=total,
+            )
+        )
+
+        succeeded += incremental_succeeded
+        failed_symbols.extend(incremental_failed)
+
+        # Retry failed symbols individually.
+        retry_failed = []
+
+        for index, symbol in enumerate(
+            list(dict.fromkeys(failed_symbols))
+        ):
+            try:
+                raw = _download_chunk_raw(
+                    [symbol],
+                    period="2y",
+                )
+
+                frame = _extract_symbol_frame(
+                    raw,
+                    symbol,
+                )
+
+                if frame.empty:
+                    retry_failed.append(symbol)
                     continue
-                try:
-                    save_symbol_rows(conn, symbol, new_data)
-                    succeeded.append(symbol)
-                except Exception:
-                    still_failed.append(symbol)
-            failed = still_failed
-            report(len(succeeded), total, "Finishing up...")
+
+                rows = _rows_from_frame(
+                    symbol,
+                    frame,
+                )
+
+                if rows:
+                    rows = rows[-MAX_CANDLES:]
+
+                    db.insert_price_rows_batch(
+                        conn,
+                        rows,
+                    )
+
+                    succeeded += 1
+                    continue
+
+                retry_failed.append(symbol)
+
+            except Exception:
+                retry_failed.append(symbol)
+
+            time.sleep(RETRY_DELAY_SECONDS)
+
+        failed_symbols = list(
+            dict.fromkeys(retry_failed)
+        )
+
+        successful = succeeded
+        failed = len(failed_symbols)
+
+        if on_progress:
+            on_progress(
+                total,
+                total,
+                f"Update complete: {successful}/{total}",
+            )
 
         return {
-            "total": len(symbols),
-            "full_download": len(full_download),
-            "incremental": len(incremental),
-            "succeeded": succeeded,
+            "total": total,
+            "full": len(full_symbols),
+            "incremental": len(incremental_symbols),
+            "succeeded": successful,
             "failed": failed,
+            "failed_symbols": failed_symbols[:50],
         }
+
     finally:
         conn.close()
