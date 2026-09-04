@@ -1,368 +1,179 @@
-"""
-Kotlin-facing bridge, Milestones 3 + 4. Every function takes/returns
-plain strings/bools so the Kotlin side stays simple.
-"""
+"""Bridge functions called from Android/Kotlin."""
 
-import db
-import scans_repository as scans_repo
-import settings_repository as settings_repo
-import tracker
-import updater
-import rating
-from conditions import Condition, ConditionEntry, IndicatorSpec
-from scanner import Scanner
+from typing import Optional
 
-_DEMO_CONDITION_SET = [
-    ConditionEntry(
-        condition=Condition(
-            left=IndicatorSpec(name="Close", params={}),
-            comparator="Greater",
-            right=IndicatorSpec(name="EMA", params={"length": 20}),
-        ),
-        logic=None,
-    )
-]
+import data_engine
 
 
-def save_demo_locked_scan(db_path: str) -> str:
-    conn = db.get_connection(db_path)
-    try:
-        scan_id = scans_repo.save_scan(
-            conn, name="Momentum Test Scan",
-            description="Demo scan: price above its 20-day EMA",
-            timeframe="Daily", condition_set=_DEMO_CONDITION_SET,
-            is_locked=True, is_tracked=True,
-        )
-        return f"Saved 'Momentum Test Scan' (locked, tracked) as scan_id={scan_id}"
-    except scans_repo.ScanRepositoryError as exc:
-        return f"ERROR: {exc}"
-    finally:
-        conn.close()
+def update_real_data_report(
+    db_path: str,
+    symbols_csv_path: str,
+    progress_reporter=None,
+):
+    """Run raw market-data update and return a compact report."""
 
-
-def list_saved_scans_report(db_path: str, owner_mode: bool) -> str:
-    conn = db.get_connection(db_path)
-    try:
-        records = scans_repo.list_scans(conn, owner_mode=owner_mode)
-        if not records:
-            return "No saved scans yet."
-        lines = [f"Saved Scans (Owner Mode: {'ON' if owner_mode else 'OFF'})", "=" * 40]
-        for r in records:
-            lock_tag = "[LOCKED]" if r.is_locked else "[open]"
-            track_tag = "[tracked]" if r.is_tracked else ""
-            lines.append(f"\n{r.name} {lock_tag} {track_tag} v{r.scan_version}")
-            lines.append(f"  Timeframe: {r.timeframe}")
-            lines.append(f"  Description: {r.description}")
-            lines.append(f"  Condition: {r.summary}")
-        return "\n".join(lines)
-    finally:
-        conn.close()
-
-
-def run_saved_scan_report(db_path: str, name: str) -> str:
-    conn = db.get_connection(db_path)
-    try:
-        _, _, timeframe, condition_set = scans_repo.load_scan_for_execution(conn, name)
-    except scans_repo.ScanRepositoryError as exc:
-        conn.close()
-        return f"ERROR: {exc}"
-    conn.close()
-
-    scanner = Scanner(db_path)
-    try:
-        summary = scanner.run_scan(condition_set, timeframe)
-    finally:
-        scanner.close()
-
-    lines = [f"Ran saved scan: {name}", f"Timeframe: {timeframe}", ""]
-    lines.append(f"Matched: {summary.matched_count} / {summary.total_symbols} scanned")
-    if summary.matches:
-        for m in summary.matches:
-            values_str = ", ".join(f"{k}={v:.2f}" for k, v in m.values.items())
-            lines.append(f"  {m.symbol}  [{m.timeframe}]  Close={m.close:.2f}  {values_str}")
-    else:
-        lines.append("  No matches.")
-    return "\n".join(lines)
-
-
-def set_owner_pin_report(db_path: str, pin: str) -> str:
-    conn = db.get_connection(db_path)
-    try:
-        settings_repo.set_owner_pin(conn, pin)
-        return "Owner PIN set successfully."
-    except settings_repo.SettingsError as exc:
-        return f"ERROR: {exc}"
-    finally:
-        conn.close()
-
-
-def verify_owner_pin_check(db_path: str, pin: str) -> bool:
-    conn = db.get_connection(db_path)
-    try:
-        return settings_repo.verify_owner_pin(conn, pin)
-    finally:
-        conn.close()
-
-
-def is_owner_pin_set_check(db_path: str) -> bool:
-    conn = db.get_connection(db_path)
-    try:
-        return settings_repo.is_owner_pin_set(conn)
-    finally:
-        conn.close()
-
-
-# ------------------------------------------------------------
-# MILESTONE 4 - Research Engine
-# ------------------------------------------------------------
-
-def run_tracked_scans_and_update_report(db_path: str) -> str:
-    conn = db.get_connection(db_path)
-    try:
-        tracked = scans_repo.list_tracked_scans(conn)
-        lines = [f"Tracked scans found: {len(tracked)}", ""]
-
-        for scan_id, name, scan_version, timeframe, condition_set in tracked:
-            scanner = Scanner(db_path)
+    def on_progress(done: int, total: int, phase: str):
+        if progress_reporter is not None:
             try:
-                summary = scanner.run_scan(condition_set, timeframe)
-            finally:
-                scanner.close()
+                progress_reporter.onProgress(
+                    int(done),
+                    int(total),
+                    str(phase),
+                )
+            except Exception:
+                # Progress reporting must never stop the actual update.
+                pass
 
-            track_result = tracker.track_new_matches(conn, scan_id, scan_version, summary)
-            lines.append(f"[{name}] matched={summary.matched_count} "
-                         f"new_signals={len(track_result.logged)} "
-                         f"already_open={len(track_result.skipped_duplicate)}")
-            if track_result.logged:
-                lines.append(f"    New: {', '.join(track_result.logged)}")
-
-        lines.append("")
-        lines.append("--- Mark-to-market: updating all open signals ---")
-        update_result = updater.update_open_signals(conn)
-        lines.append(f"Updated: {update_result.updated}")
-        lines.append(f"Closed this run: {update_result.closed if update_result.closed else 'none'}")
-        lines.append(f"Newly matured (>=6 periods): {update_result.matured if update_result.matured else 'none'}")
-        if update_result.failed:
-            lines.append(f"Failed to update: {update_result.failed}")
-
-        lines.append("")
-        lines.append("--- Recomputing ratings for tracked scans ---")
-        for scan_id, name, scan_version, timeframe, condition_set in tracked:
-            rating_result = rating.compute_rating(conn, scan_id, scan_version)
-            rating.save_rating_snapshot(conn, rating_result)
-            lines.append(
-                f"[{name}] rating={rating_result.rating_score:.2f}/10 "
-                f"(confidence={rating_result.confidence:.2f}, "
-                f"matured_signals={rating_result.matured_signal_count})"
+    try:
+        if progress_reporter is not None:
+            on_progress(
+                0,
+                0,
+                "Loading NSE symbol list...",
             )
 
-        return "\n".join(lines)
-    finally:
-        conn.close()
-
-
-def get_rating_report(db_path: str, scan_name: str) -> str:
-    conn = db.get_connection(db_path)
-    try:
-        cur = conn.execute("SELECT scan_id, scan_version FROM scans WHERE name = ?", (scan_name,))
-        row = cur.fetchone()
-        if row is None:
-            return f"ERROR: No saved scan named '{scan_name}'"
-        scan_id, scan_version = row
-
-        r = rating.compute_rating(conn, scan_id, scan_version)
-        lines = [f"Rating for '{scan_name}'", "=" * 40]
-        lines.append(f"Rating Score: {r.rating_score:.2f} / 10  ({r.star_rating:.2f} stars)")
-        lines.append(f"Confidence: {r.confidence:.2f} (based on {r.matured_signal_count} matured signals)")
-        if r.raw_score is not None:
-            lines.append(f"Raw score (before confidence shrinkage): {r.raw_score:.2f} / 10")
-            lines.append(f"Win Rate: {r.win_rate * 100:.1f}%")
-            lines.append(f"Avg Max Gain: {r.avg_gain_pct:.2f}%")
-            lines.append(f"Avg Max Drawdown: {r.avg_drawdown_pct:.2f}%")
-        else:
-            lines.append("No matured signals yet - rating is a neutral placeholder.")
-
-        lines.append("")
-        lines.append("Rating trend (by day):")
-        trend = rating.get_rating_trend(conn, scan_id)
-        if trend:
-            for calculated_at, score, confidence, count in trend:
-                lines.append(f"  {calculated_at}: {score:.2f}/10 (confidence={confidence:.2f}, n={count})")
-        else:
-            lines.append("  (no history yet - run Daily Update to record the first snapshot)")
-
-        return "\n".join(lines)
-    finally:
-        conn.close()
-
-
-def list_signals_report(db_path: str, scan_name: str) -> str:
-    conn = db.get_connection(db_path)
-    try:
-        cur = conn.execute("SELECT scan_id FROM scans WHERE name = ?", (scan_name,))
-        row = cur.fetchone()
-        if row is None:
-            return f"ERROR: No saved scan named '{scan_name}'"
-        scan_id = row[0]
-
-        cur = conn.execute(
-            """
-            SELECT symbol, status, entry_date, entry_price, current_price,
-                   exit_date, exit_price, periods_elapsed, is_matured,
-                   round(return_pct, 2), round(max_gain_pct, 2), round(max_drawdown_pct, 2)
-            FROM signals WHERE scan_id = ? ORDER BY entry_date DESC
-            """,
-            (scan_id,),
+        symbols = data_engine.load_symbol_list(
+            symbols_csv_path
         )
-        rows = cur.fetchall()
-        if not rows:
-            return f"No signals tracked yet for '{scan_name}'."
 
-        lines = [f"Signals for '{scan_name}' ({len(rows)} total)", "=" * 40]
-        for (symbol, status, entry_date, entry_price, current_price, exit_date,
-             exit_price, periods, matured, ret, max_gain, max_dd) in rows:
-            matured_tag = "matured" if matured else "immature"
-            lines.append(f"\n{symbol}  [{status}]  ({matured_tag}, {periods} periods)")
-            lines.append(f"  Entry: {entry_date} @ {entry_price:.2f}")
-            if status == "CLOSED":
-                lines.append(f"  Exit:  {exit_date} @ {exit_price:.2f}")
-            else:
-                lines.append(f"  Current: {current_price:.2f}")
-            lines.append(f"  Return: {ret}%  MaxGain: {max_gain}%  MaxDrawdown: {max_dd}%")
-        return "\n".join(lines)
-    finally:
-        conn.close()
+        total = len(symbols)
 
+        if progress_reporter is not None:
+            on_progress(
+                0,
+                total,
+                f"Found {total} symbols",
+            )
 
-# ------------------------------------------------------------
-# MILESTONE 7 - Scanner screen (build-your-own condition sets)
-# ------------------------------------------------------------
-
-def build_and_validate_condition_json(
-    left_name: str, left_params_json: str, comparator: str,
-    tolerance_pct: str, right_name: str, right_params_json: str,
-) -> str:
-    import json
-    try:
-        left_params = json.loads(left_params_json)
-        right_params = json.loads(right_params_json)
-        left = IndicatorSpec(name=left_name, params=left_params)
-        right = IndicatorSpec(name=right_name, params=right_params)
-        tol = float(tolerance_pct) if tolerance_pct not in (None, "", "null") else None
-        cond = Condition(left=left, comparator=comparator, right=right, tolerance_pct=tol)
-        return json.dumps(cond.to_dict())
-    except Exception as exc:
-        return f"ERROR: {exc}"
-
-
-def describe_condition_set_json(condition_set_json: str) -> str:
-    import json
-    from conditions import condition_set_label
-    try:
-        data = json.loads(condition_set_json)
-        condition_set = [ConditionEntry.from_dict(d) for d in data]
-        return condition_set_label(condition_set)
-    except Exception as exc:
-        return f"ERROR: {exc}"
-
-
-def run_ad_hoc_scan_report(db_path: str, timeframe: str, condition_set_json: str) -> str:
-    import json
-    try:
-        data = json.loads(condition_set_json)
-        condition_set = [ConditionEntry.from_dict(d) for d in data]
-    except Exception as exc:
-        return f"ERROR: invalid condition set ({exc})"
-
-    scanner = Scanner(db_path)
-    try:
-        summary = scanner.run_scan(condition_set, timeframe)
-    finally:
-        scanner.close()
-
-    lines = [f"Timeframe: {timeframe}",
-             f"Matched: {summary.matched_count} / {summary.total_symbols} scanned", ""]
-    if summary.matches:
-        for m in summary.matches:
-            values_str = ", ".join(f"{k}={v:.2f}" for k, v in m.values.items())
-            lines.append(f"  {m.symbol}  [{m.timeframe}]  Close={m.close:.2f}  {values_str}")
-    else:
-        lines.append("No matches.")
-    return "\n".join(lines)
-
-
-def save_new_scan_report(
-    db_path: str, name: str, description: str, timeframe: str,
-    condition_set_json: str, is_locked: bool, is_tracked: bool,
-) -> str:
-    import json
-    try:
-        data = json.loads(condition_set_json)
-        condition_set = [ConditionEntry.from_dict(d) for d in data]
-    except Exception as exc:
-        return f"ERROR: invalid condition set ({exc})"
-
-    conn = db.get_connection(db_path)
-    try:
-        scan_id = scans_repo.save_scan(
-            conn, name, description, timeframe, condition_set, is_locked, is_tracked
+        report = data_engine.update_symbols(
+            db_path=db_path,
+            symbols=symbols,
+            on_progress=on_progress,
         )
-        return f"Saved scan '{name}' as scan_id={scan_id}"
-    except scans_repo.ScanRepositoryError as exc:
-        return f"ERROR: {exc}"
-    finally:
-        conn.close()
 
+        return {
+            "status": "SUCCESS",
+            "total": report.get("total", total),
+            "full": report.get("full", 0),
+            "incremental": report.get(
+                "incremental",
+                0,
+            ),
+            "succeeded": report.get(
+                "succeeded",
+                0,
+            ),
+            "failed": report.get(
+                "failed",
+                0,
+            ),
+            "failed_symbols": report.get(
+                "failed_symbols",
+                [],
+            ),
+        }
 
-# ------------------------------------------------------------
-# MILESTONE 8 - Real Data Engine (yfinance -> SQLite)
-# ------------------------------------------------------------
-
-def update_real_data_report(db_path: str, symbols_csv_path: str, on_progress=None) -> str:
-    """
-    Downloads/refreshes real NSE daily closes for every symbol in the
-    bundled nse_symbols.csv (~2087 stocks). Safe to call repeatedly.
-
-    on_progress, if given, is a Kotlin callback object with method
-    onProgress(done, total, phase). Reports START BEFORE importing
-    yfinance (which can itself be slow the first time on Android) so
-    we can see exactly where time goes if it stalls.
-    """
-    def report(done, total, phase):
-        if on_progress is not None:
+    except Exception as exc:
+        if progress_reporter is not None:
             try:
-                on_progress.onProgress(done, total, phase)
+                progress_reporter.onProgress(
+                    0,
+                    0,
+                    f"Update error: {exc}",
+                )
             except Exception:
                 pass
 
-    report(0, 0, "Starting Python engine...")
-    import time as _time
-    _t0 = _time.time()
+        return {
+            "status": "ERROR",
+            "error": str(exc),
+        }"""Bridge functions called from Android/Kotlin."""
 
-    report(0, 0, "Loading yfinance (first time can be slow)...")
-    import data_engine
-    report(0, 0, f"yfinance loaded in {_time.time() - _t0:.1f}s. Reading symbol list...")
+from typing import Optional
 
-    symbols = data_engine.load_symbol_list(symbols_csv_path)
-    report(0, len(symbols), f"Loaded {len(symbols)} symbols. Checking database...")
+import data_engine
 
-    result = data_engine.update_symbols(db_path, symbols, on_progress=on_progress)
 
-    lines = [
-        "Real Data Update (Full NSE List)",
-        "=" * 40,
-        f"Total symbols: {result['total']}",
-        f"Needed full download: {result['full_download']}",
-        f"Needed incremental update: {result['incremental']}",
-        f"Succeeded: {len(result['succeeded'])}",
-        f"Failed (after retry): {len(result['failed'])}",
-    ]
-    if result["failed"]:
-        shown = result["failed"][:20]
-        lines.append(f"Failed symbols (first 20): {', '.join(shown)}")
-        if len(result["failed"]) > 20:
-            lines.append(f"...and {len(result['failed']) - 20} more")
-    if result["succeeded"]:
-        lines.append("")
-        lines.append(f"Sample of updated symbols: {', '.join(result['succeeded'][:5])}")
-    return "\n".join(lines)
+def update_real_data_report(
+    db_path: str,
+    symbols_csv_path: str,
+    progress_reporter=None,
+):
+    """Run raw market-data update and return a compact report."""
+
+    def on_progress(done: int, total: int, phase: str):
+        if progress_reporter is not None:
+            try:
+                progress_reporter.onProgress(
+                    int(done),
+                    int(total),
+                    str(phase),
+                )
+            except Exception:
+                # Progress reporting must never stop the actual update.
+                pass
+
+    try:
+        if progress_reporter is not None:
+            on_progress(
+                0,
+                0,
+                "Loading NSE symbol list...",
+            )
+
+        symbols = data_engine.load_symbol_list(
+            symbols_csv_path
+        )
+
+        total = len(symbols)
+
+        if progress_reporter is not None:
+            on_progress(
+                0,
+                total,
+                f"Found {total} symbols",
+            )
+
+        report = data_engine.update_symbols(
+            db_path=db_path,
+            symbols=symbols,
+            on_progress=on_progress,
+        )
+
+        return {
+            "status": "SUCCESS",
+            "total": report.get("total", total),
+            "full": report.get("full", 0),
+            "incremental": report.get(
+                "incremental",
+                0,
+            ),
+            "succeeded": report.get(
+                "succeeded",
+                0,
+            ),
+            "failed": report.get(
+                "failed",
+                0,
+            ),
+            "failed_symbols": report.get(
+                "failed_symbols",
+                [],
+            ),
+        }
+
+    except Exception as exc:
+        if progress_reporter is not None:
+            try:
+                progress_reporter.onProgress(
+                    0,
+                    0,
+                    f"Update error: {exc}",
+                )
+            except Exception:
+                pass
+
+        return {
+            "status": "ERROR",
+            "error": str(exc),
+        }
