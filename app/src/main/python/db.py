@@ -1,16 +1,17 @@
-"""SQLite storage for prices, scans, settings, and now signals."""
+"""SQLite storage for prices, scans, settings, signals and ratings."""
+
 import sqlite3
-from typing import List, Tuple
+from typing import Dict, List, Tuple
+
 import pandas as pd
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
-    # timeout=30: wait up to 30s for a lock instead of failing instantly
-    # ("database is locked") - needed because a background download
-    # and a foreground scan can both touch the DB at overlapping times.
     conn = sqlite3.connect(db_path, timeout=30)
+
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
+
     ensure_schema(conn)
     return conn
 
@@ -18,10 +19,16 @@ def get_connection(db_path: str) -> sqlite3.Connection:
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS prices (
-            symbol TEXT NOT NULL, date TEXT NOT NULL, close REAL NOT NULL,
-            PRIMARY KEY (symbol, date))"""
+            symbol TEXT NOT NULL,
+            date TEXT NOT NULL,
+            close REAL NOT NULL,
+            PRIMARY KEY (symbol, date)
+        )"""
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_prices_symbol ON prices(symbol)")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prices_symbol ON prices(symbol)"
+    )
 
     conn.execute(
         """CREATE TABLE IF NOT EXISTS scans (
@@ -34,12 +41,15 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             is_tracked INTEGER NOT NULL DEFAULT 0,
             scan_version INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL)"""
+            updated_at TEXT NOT NULL
+        )"""
     )
 
     conn.execute(
         """CREATE TABLE IF NOT EXISTS app_settings (
-            key TEXT PRIMARY KEY, value TEXT)"""
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )"""
     )
 
     conn.execute(
@@ -59,10 +69,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             is_matured INTEGER NOT NULL DEFAULT 0,
             return_pct REAL NOT NULL DEFAULT 0.0,
             max_gain_pct REAL NOT NULL DEFAULT 0.0,
-            max_drawdown_pct REAL NOT NULL DEFAULT 0.0)"""
+            max_drawdown_pct REAL NOT NULL DEFAULT 0.0
+        )"""
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_scan ON signals(scan_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signals_scan ON signals(scan_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)"
+    )
 
     conn.execute(
         """CREATE TABLE IF NOT EXISTS rating_history (
@@ -76,36 +92,123 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             avg_drawdown_pct REAL NOT NULL,
             rating_score REAL NOT NULL,
             confidence REAL NOT NULL,
-            UNIQUE(scan_id, calculated_at))"""
+            UNIQUE(scan_id, calculated_at)
+        )"""
     )
+
     conn.commit()
 
 
-def insert_price_rows(conn, symbol, rows):
+def insert_price_rows(
+    conn: sqlite3.Connection,
+    symbol: str,
+    rows: List[Tuple[str, float]],
+) -> None:
+    if not rows:
+        return
+
     conn.executemany(
-        "INSERT OR REPLACE INTO prices (symbol, date, close) VALUES (?, ?, ?)",
+        """
+        INSERT OR REPLACE INTO prices
+        (symbol, date, close)
+        VALUES (?, ?, ?)
+        """,
         [(symbol, d, c) for d, c in rows],
     )
+
     conn.commit()
+
+
+def insert_price_rows_batch(
+    conn: sqlite3.Connection,
+    rows: List[Tuple[str, str, float]],
+) -> None:
+    """Insert rows for many symbols in one transaction."""
+
+    if not rows:
+        return
+
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO prices
+        (symbol, date, close)
+        VALUES (?, ?, ?)
+        """,
+        rows,
+    )
+
+    conn.commit()
+
+
+def get_latest_dates(
+    conn: sqlite3.Connection,
+) -> Dict[str, str]:
+    """Return latest stored date for every symbol in one DB query."""
+
+    cur = conn.execute(
+        """
+        SELECT symbol, MAX(date)
+        FROM prices
+        GROUP BY symbol
+        """
+    )
+
+    return {
+        symbol: latest_date
+        for symbol, latest_date in cur.fetchall()
+    }
+
+
+def get_latest_date(
+    conn: sqlite3.Connection,
+    symbol: str,
+):
+    """Return latest stored date for one symbol."""
+
+    cur = conn.execute(
+        """
+        SELECT MAX(date)
+        FROM prices
+        WHERE symbol = ?
+        """,
+        (symbol,),
+    )
+
+    row = cur.fetchone()
+    return row[0] if row else None
 
 
 def list_available_symbols(conn) -> List[str]:
-    cur = conn.execute("SELECT DISTINCT symbol FROM prices ORDER BY symbol")
+    cur = conn.execute(
+        "SELECT DISTINCT symbol FROM prices ORDER BY symbol"
+    )
     return [row[0] for row in cur.fetchall()]
 
 
-def get_price_series(conn, symbol) -> pd.DataFrame:
+def get_price_series(
+    conn: sqlite3.Connection,
+    symbol: str,
+) -> pd.DataFrame:
     df = pd.read_sql_query(
-        "SELECT date AS Date, close AS Close FROM prices WHERE symbol = ? ORDER BY date ASC",
-        conn, params=(symbol,),
+        """
+        SELECT date AS Date, close AS Close
+        FROM prices
+        WHERE symbol = ?
+        ORDER BY date ASC
+        """,
+        conn,
+        params=(symbol,),
     )
+
     if df.empty:
         return df
+
     df["Date"] = pd.to_datetime(df["Date"])
     df["Close"] = pd.to_numeric(df["Close"])
+
     return df
 
 
-def row_count(conn) -> int:
+def row_count(conn: sqlite3.Connection) -> int:
     cur = conn.execute("SELECT COUNT(*) FROM prices")
     return cur.fetchone()[0]
