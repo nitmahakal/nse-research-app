@@ -25,6 +25,10 @@ import com.chaquo.python.android.AndroidPlatform
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 fun copySymbolsAsset(context: Context): String {
     val destFile = File(context.filesDir, "nse_symbols.csv")
@@ -39,6 +43,7 @@ fun copySymbolsAsset(context: Context): String {
 class MainActivity : AppCompatActivity() {
 
     private var ownerModeUnlocked = false
+    private var updateActionCheckRunning = false
     private val realUpdateWorkName = "real_data_update"
     private val updatePrefsName = "update_prefs"
     private val lastSuccessfulUpdateKey = "last_successful_update"
@@ -233,19 +238,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateRealDataButton.setOnClickListener {
-            val workManager = WorkManager.getInstance(applicationContext)
+            if (updateActionCheckRunning) {
+                return@setOnClickListener
+            }
 
-            workManager.getWorkInfosForUniqueWorkLiveData(realUpdateWorkName)
-                .observe(this) { infos ->
+        updateActionCheckRunning = true
 
-                val activeWork = infos.firstOrNull {
-                    it.state == WorkInfo.State.RUNNING ||
-                    it.state == WorkInfo.State.ENQUEUED ||
-                    it.state == WorkInfo.State.BLOCKED
-                }
+        val workManager = WorkManager.getInstance(applicationContext)
+
+        lifecycleScope.launch {
+            val activeWork = withContext(Dispatchers.IO) {
+                workManager.getWorkInfosForUniqueWork(realUpdateWorkName)
+                    .get()
+                    .firstOrNull {
+                        it.state == WorkInfo.State.RUNNING ||
+                        it.state == WorkInfo.State.ENQUEUED ||
+                        it.state == WorkInfo.State.BLOCKED
+                    }
+            }
+
+            updateActionCheckRunning = false
 
             if (activeWork != null) {
-                AlertDialog.Builder(this)
+                AlertDialog.Builder(this@MainActivity)
                     .setTitle("Update already running")
                     .setMessage(
                         "Real-data update is already in progress.\n\n" +
@@ -253,7 +268,6 @@ class MainActivity : AppCompatActivity() {
                     )
                     .setNegativeButton("NO", null)
                     .setPositiveButton("YES") { _, _ ->
-                        workManager.cancelUniqueWork(realUpdateWorkName)
 
                         val newRequest =
                             OneTimeWorkRequestBuilder<UpdateRealDataWorker>()
@@ -261,7 +275,7 @@ class MainActivity : AppCompatActivity() {
                                     Constraints.Builder()
                                         .setRequiredNetworkType(
                                             NetworkType.CONNECTED
-                                        )
+                                        )    
                                         .build()
                                 )
                                 .build()
@@ -274,7 +288,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     .show()
 
-                return@observe
+                return@launch
             }
 
             resultView.text = "Starting real-data update..."
@@ -285,7 +299,7 @@ class MainActivity : AppCompatActivity() {
                         Constraints.Builder()
                             .setRequiredNetworkType(
                                 NetworkType.CONNECTED
-                            )
+                            )    
                             .build()
                     )
                     .build()
@@ -296,6 +310,7 @@ class MainActivity : AppCompatActivity() {
                 request
             )
         }
+    }
 
     workManager.getWorkInfosForUniqueWorkLiveData(realUpdateWorkName)
         .observe(this) { infos ->
