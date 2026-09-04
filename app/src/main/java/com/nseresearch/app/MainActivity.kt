@@ -1,5 +1,8 @@
 package com.nseresearch.app
 
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
@@ -36,6 +39,9 @@ fun copySymbolsAsset(context: Context): String {
 class MainActivity : AppCompatActivity() {
 
     private var ownerModeUnlocked = false
+    private val realUpdateWorkName = "real_data_update"
+    private val updatePrefsName = "update_prefs"
+    private val lastSuccessfulUpdateKey = "last_successful_update"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -227,38 +233,157 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateRealDataButton.setOnClickListener {
-            resultView.text = "Starting download..."
-            val request = OneTimeWorkRequestBuilder<UpdateRealDataWorker>()
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                .build()
             val workManager = WorkManager.getInstance(applicationContext)
-            workManager.enqueue(request)
-            workManager.getWorkInfoByIdLiveData(request.id).observe(this) { info ->
-                if (info == null) return@observe
-                when (info.state) {
-                    WorkInfo.State.SUCCEEDED -> {
-                        val report = info.outputData.getString("report") ?: "(no report text)"
-                        resultView.text = "Real data update SUCCEEDED:\n\n$report"
+
+            workManager.getWorkInfosForUniqueWorkLiveData(realUpdateWorkName)
+                .observe(this) { infos ->
+
+                val activeWork = infos.firstOrNull {
+                    it.state == WorkInfo.State.RUNNING ||
+                    it.state == WorkInfo.State.ENQUEUED ||
+                    it.state == WorkInfo.State.BLOCKED
+                }
+
+            if (activeWork != null) {
+                AlertDialog.Builder(this)
+                    .setTitle("Update already running")
+                    .setMessage(
+                        "Real-data update is already in progress.\n\n" +
+                        "Do you want to cancel it and restart?"
+                    )
+                    .setNegativeButton("NO", null)
+                    .setPositiveButton("YES") { _, _ ->
+                        workManager.cancelUniqueWork(realUpdateWorkName)
+
+                        val newRequest =
+                            OneTimeWorkRequestBuilder<UpdateRealDataWorker>()
+                                .setConstraints(
+                                    Constraints.Builder()
+                                        .setRequiredNetworkType(
+                                            NetworkType.CONNECTED
+                                        )
+                                        .build()
+                                )
+                                .build()
+
+                        workManager.enqueueUniqueWork(
+                            realUpdateWorkName,
+                            androidx.work.ExistingWorkPolicy.REPLACE,
+                            newRequest
+                        )
                     }
-                    WorkInfo.State.FAILED -> {
-                        val report = info.outputData.getString("report") ?: "(no error details)"
-                        resultView.text = "Real data update FAILED:\n\n$report"
-                    }
-                    WorkInfo.State.RUNNING -> {
-                        val done = info.progress.getInt("done", -1)
-                        val total = info.progress.getInt("total", -1)
-                        val phase = info.progress.getString("phase") ?: "Working..."
-                        resultView.text = if (done >= 0 && total > 0) {
+                    .show()
+
+                return@observe
+            }
+
+            resultView.text = "Starting real-data update..."
+
+            val request =
+                OneTimeWorkRequestBuilder<UpdateRealDataWorker>()
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(
+                                NetworkType.CONNECTED
+                            )
+                            .build()
+                    )
+                    .build()
+
+            workManager.enqueueUniqueWork(
+                realUpdateWorkName,
+                androidx.work.ExistingWorkPolicy.KEEP,
+                request
+            )
+        }
+
+    workManager.getWorkInfosForUniqueWorkLiveData(realUpdateWorkName)
+        .observe(this) { infos ->
+
+            val info = infos.firstOrNull() ?: return@observe
+
+            when (info.state) {
+
+                WorkInfo.State.RUNNING -> {
+                    updateRealDataButton.text =
+                        "Update In Progress..."
+
+                    val done =
+                        info.progress.getInt("done", -1)
+
+                    val total =
+                        info.progress.getInt("total", -1)
+
+                    val phase =
+                        info.progress.getString("phase")
+                            ?: "Working..."
+
+                    resultView.text =
+                        if (done >= 0 && total > 0) {
                             "$phase\n($done / $total)"
                         } else {
                             phase
                         }
-                    }
-                    else -> { /* ENQUEUED, BLOCKED, CANCELLED - no UI change needed */ }
+                }
+
+                WorkInfo.State.SUCCEEDED -> {
+                    updateRealDataButton.text =
+                        "Update Real Data"
+
+                    val report =
+                        info.outputData.getString("report")
+                            ?: "(no report text)"
+
+                    val timestamp =
+                        SimpleDateFormat(
+                            "dd-MM-yyyy HH:mm:ss",
+                            Locale.getDefault()
+                        ).format(Date())
+
+                    getSharedPreferences(
+                        updatePrefsName,
+                        Context.MODE_PRIVATE
+                    )
+                        .edit()
+                        .putString(
+                            lastSuccessfulUpdateKey,
+                            timestamp
+                        )
+                        .apply()
+
+                    resultView.text =
+                        "Real data update SUCCEEDED:\n\n" +
+                        "Last successful update: $timestamp\n\n" +
+                        report
+                }
+
+                WorkInfo.State.FAILED -> {
+                    updateRealDataButton.text =
+                        "Update Real Data"
+
+                    val report =
+                        info.outputData.getString("report")
+                            ?: "(no error details)"
+
+                    resultView.text =
+                        "Real data update FAILED:\n\n$report"
+                }
+
+                WorkInfo.State.CANCELLED -> {
+                    updateRealDataButton.text =
+                        "Update Real Data"
+
+                    resultView.text =
+                        "Real data update cancelled."
+                }
+
+                else -> {
+                    updateRealDataButton.text =
+                        "Update Real Data"
                 }
             }
         }
-
+}
         scheduleAutoUpdateButton.setOnClickListener {
             val request = PeriodicWorkRequestBuilder<DailyUpdateWorker>(24, TimeUnit.HOURS)
                 .setConstraints(Constraints.Builder().build())
