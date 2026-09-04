@@ -11,6 +11,7 @@ import settings_repository as settings_repo
 import tracker
 import updater
 import rating
+import data_engine
 
 from conditions import Condition, ConditionEntry, IndicatorSpec
 from scanner import Scanner
