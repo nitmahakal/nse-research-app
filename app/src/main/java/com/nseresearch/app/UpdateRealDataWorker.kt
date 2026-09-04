@@ -23,7 +23,7 @@ class UpdateRealDataWorker(
             total: Int,
             phase: String
         ) {
-            worker.setProgress(
+            worker.setProgressAsync(
                 workDataOf(
                     "done" to done,
                     "total" to total,
