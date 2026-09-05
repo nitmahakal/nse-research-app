@@ -93,8 +93,7 @@ class UpdateRealDataWorker(
             
             val status =
                 try {
-                    report.asMap()
-                        .get("status")
+                    report.get("status")
                         ?.toString()
                 } catch (_: Exception) {
                     null
@@ -102,8 +101,7 @@ class UpdateRealDataWorker(
             
             val referenceLatestDate =
                 try {
-                    report.asMap()
-                        .get("reference_latest_date")
+                    report.get("reference_latest_date")
                         ?.toString()
                 } catch (_: Exception) {
                     null
