@@ -1,21 +1,19 @@
 package com.nseresearch.app
 
 import android.content.Context
-import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
-import com.chaquo.python.Python
-import com.chaquo.python.android.AndroidPlatform
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.chaquo.python.Python
 
 class UpdateRealDataWorker(
-    context: Context,
-    params: WorkerParameters
-) : CoroutineWorker(context, params) {
+    appContext: Context,
+    workerParams: WorkerParameters
+) : CoroutineWorker(appContext, workerParams) {
 
-    private class ProgressReporter(
+    class ProgressReporter(
         private val worker: UpdateRealDataWorker
     ) {
         fun onProgress(
@@ -33,70 +31,78 @@ class UpdateRealDataWorker(
         }
     }
 
-    override suspend fun doWork(): Result {
-        return try {
-            if (!Python.isStarted()) {
-                Python.start(
-                    AndroidPlatform(applicationContext)
-                )
-            }
+    override suspend fun doWork(): Result =
+        withContext(Dispatchers.IO) {
 
-            val report = withContext(Dispatchers.IO) {
-                val python = Python.getInstance()
+            try {
+                val context = applicationContext
 
                 val dbPath =
-                    applicationContext.filesDir.absolutePath +
-                    "/nse_research.db"
+                    context.getDatabasePath("nse_research.db")
+                        .absolutePath
 
-                val module =
-                    python.getModule("app_bridge")
+                MainActivity.copySymbolsAsset(
+                    context
+                )
 
                 val symbolsPath =
-                    copySymbolsAsset(applicationContext)
+                    context.filesDir
+                        .resolve("nse_symbols.csv")
+                        .absolutePath
 
-                module.callAttr(
-                    "update_real_data_report",
-                    dbPath,
-                    symbolsPath,
+                val reporter =
                     ProgressReporter(this@UpdateRealDataWorker)
-                )
-            }
 
-            val reportText = report.toString()
+                val python =
+                    Python.getInstance()
 
-            Log.i(
-                "UpdateRealDataWorker",
-                reportText
-            )
+                val bridge =
+                    python.getModule("app_bridge")
 
-            val truncated =
-                if (reportText.length > 3000) {
-                    reportText.take(3000) +
-                    "\n...(truncated)"
+                val report =
+                    bridge.callAttr(
+                        "update_real_data_report",
+                        dbPath,
+                        symbolsPath,
+                        reporter
+                    )
+
+                val reportText =
+                    report.toString()
+
+                val status =
+                    try {
+                        report.asMap()
+                            .get("status")
+                            ?.toString()
+                    } catch (_: Exception) {
+                        null
+                    }
+
+                if (status == "ERROR") {
+                    Result.failure(
+                        workDataOf(
+                            "report" to reportText
+                        )
+                    )
                 } else {
-                    reportText
+                    Result.success(
+                        workDataOf(
+                            "report" to reportText
+                        )
+                    )
                 }
 
-            Result.success(
-                workDataOf(
-                    "report" to truncated
+            } catch (e: Exception) {
+
+                Result.failure(
+                    workDataOf(
+                        "report" to (
+                            "ERROR: " +
+                            (e.message ?: e.toString())
+                        )
+                    )
                 )
-            )
-
-        } catch (e: Exception) {
-
-            Log.e(
-                "UpdateRealDataWorker",
-                "Real data update failed",
-                e
-            )
-
-            Result.failure(
-                workDataOf(
-                    "report" to
-                        "ERROR: ${e.message}"
-                )
-            )
+            }
         }
-    }
 }
