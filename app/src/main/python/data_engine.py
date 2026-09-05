@@ -219,26 +219,14 @@ def _determine_reference_latest_date(
     symbols: List[str],
 ) -> Tuple[Optional[pd.Timestamp], Dict[str, pd.Timestamp]]:
 
-    """Discover the actual latest trading date.
-
-    A small sample of symbols is downloaded.
-    The most common latest date is used as the
-    reference market date.
-
-    This deliberately does NOT use today's date,
-    weekday logic, or holiday assumptions.
-    """
+    """Get the latest actual date available from Yahoo Finance."""
 
     if not symbols:
         return None, {}
 
-    probe_symbols = symbols[
-        :REFERENCE_PROBE_SIZE
-    ]
-
     try:
         raw = _download_chunk_raw(
-            probe_symbols,
+            symbols,
             period=REFERENCE_PROBE_PERIOD,
         )
     except Exception:
@@ -246,8 +234,7 @@ def _determine_reference_latest_date(
 
     latest_by_symbol = {}
 
-    for symbol in probe_symbols:
-
+    for symbol in symbols:
         frame = _extract_symbol_frame(
             raw,
             symbol,
@@ -263,19 +250,11 @@ def _determine_reference_latest_date(
     if not latest_by_symbol:
         return None, {}
 
-    counts = Counter(
-        value.strftime("%Y-%m-%d")
-        for value in latest_by_symbol.values()
-    )
-
-    reference_text, _ = counts.most_common(1)[0]
-
-    reference_date = _normalise_date(
-        reference_text
+    reference_date = max(
+        latest_by_symbol.values()
     )
 
     return reference_date, latest_by_symbol
-
 
 def _classify_symbols(
     conn,
