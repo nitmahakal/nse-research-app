@@ -90,7 +90,7 @@ class UpdateRealDataWorker(
              * PARTIAL -> WorkManager FAILURE
              * ERROR   -> WorkManager FAILURE
              */
-
+            
             val status =
                 try {
                     report.asMap()
@@ -99,17 +99,17 @@ class UpdateRealDataWorker(
                 } catch (_: Exception) {
                     null
                 }
-
+            
             if (status == "SUCCESS") {
-
+            
                 Result.success(
                     workDataOf(
                         "report" to truncated
                     )
                 )
-
+            
             } else {
-
+            
                 Result.failure(
                     workDataOf(
                         "report" to truncated
