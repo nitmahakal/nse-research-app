@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private val realUpdateWorkName = "real_data_update"
     private val updatePrefsName = "update_prefs"
     private val lastSuccessfulUpdateKey = "last_successful_update"
+    private val marketDataThroughKey = "market_data_through"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -433,38 +434,80 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     WorkInfo.State.SUCCEEDED -> {
-
+                    
                         updateRealDataButton.text =
                             "Update Real Data"
-
+                    
                         val report =
                             info.outputData.getString(
                                 "report"
                             ) ?: "(no report text)"
-
+                    
+                        val referenceLatestDate =
+                            info.outputData.getString(
+                                "reference_latest_date"
+                            ) ?: ""
+                    
+                        val dataThrough =
+                            if (referenceLatestDate.isNotBlank()) {
+                                try {
+                                    val parsedDate =
+                                        SimpleDateFormat(
+                                            "yyyy-MM-dd",
+                                            Locale.US
+                                        ).parse(
+                                            referenceLatestDate
+                                        )
+                    
+                                    if (parsedDate != null) {
+                                        SimpleDateFormat(
+                                            "dd-MM-yyyy",
+                                            Locale.getDefault()
+                                        ).format(parsedDate)
+                                    } else {
+                                        referenceLatestDate
+                                    }
+                    
+                                } catch (_: Exception) {
+                                    referenceLatestDate
+                                }
+                            } else {
+                                ""
+                            }
+                    
                         val timestamp =
                             SimpleDateFormat(
                                 "dd-MM-yyyy HH:mm:ss",
                                 Locale.getDefault()
                             ).format(Date())
-
-                        getSharedPreferences(
-                            updatePrefsName,
-                            Context.MODE_PRIVATE
-                        )
-                            .edit()
+                    
+                        val prefs =
+                            getSharedPreferences(
+                                updatePrefsName,
+                                Context.MODE_PRIVATE
+                            )
+                    
+                        prefs.edit()
                             .putString(
                                 lastSuccessfulUpdateKey,
                                 timestamp
                             )
+                            .putString(
+                                marketDataThroughKey,
+                                dataThrough
+                            )
                             .apply()
-
+                    
                         resultView.text =
                             "Real data update SUCCEEDED:\n\n" +
-                                    "Last successful update: $timestamp\n\n" +
+                                    "Market Data Through: " +
+                                    dataThrough +
+                                    "\n\n" +
+                                    "Last Update Finished: " +
+                                    timestamp +
+                                    "\n\n" +
                                     report
                     }
-
                     WorkInfo.State.FAILED -> {
 
                         updateRealDataButton.text =
