@@ -774,14 +774,13 @@ def update_real_data_report(
     progress_reporter=None,
 ):
     """
-    Raw market-data update only.
+    Kotlin-facing bridge for raw market-data Update.
 
-    No indicators.
-    No scanner.
-    No rating.
-
-    Loads the NSE symbol list, updates raw market data,
-    and returns a compact report.
+    IMPORTANT:
+    - No indicator calculations.
+    - No scanner execution.
+    - No rating calculations.
+    - data_engine is the source of truth for update logic.
     """
 
     def on_progress(
@@ -797,11 +796,10 @@ def update_real_data_report(
                     str(phase),
                 )
             except Exception:
-                # UI progress must never stop the update.
+                # Progress/UI errors must never stop the update.
                 pass
 
     try:
-
         if progress_reporter is not None:
             on_progress(
                 0,
@@ -828,35 +826,47 @@ def update_real_data_report(
             on_progress=on_progress,
         )
 
+        # IMPORTANT:
+        # data_engine returns integer counts.
+        # Do NOT call len() on succeeded/failed.
         return {
-            "status": "SUCCESS",
+            "status": report.get(
+                "status",
+                "SUCCESS",
+            ),
             "total": report.get(
                 "total",
                 total,
             ),
             "full": report.get(
-                "full_download",
-                report.get("full", 0),
+                "full",
+                0,
             ),
             "incremental": report.get(
                 "incremental",
                 0,
             ),
-            "succeeded": len(
-                report.get(
-                    "succeeded",
-                    [],
-                )
+            "already_latest": report.get(
+                "already_latest",
+                0,
             ),
-            "failed": len(
-                report.get(
-                    "failed",
-                    [],
-                )
+            "succeeded": report.get(
+                "succeeded",
+                0,
+            ),
+            "failed": report.get(
+                "failed",
+                0,
             ),
             "failed_symbols": report.get(
-                "failed",
+                "failed_symbols",
                 [],
+            ),
+            "reference_latest_date": report.get(
+                "reference_latest_date",
+            ),
+            "error": report.get(
+                "error",
             ),
         }
 
@@ -875,4 +885,12 @@ def update_real_data_report(
         return {
             "status": "ERROR",
             "error": str(exc),
+            "total": 0,
+            "full": 0,
+            "incremental": 0,
+            "already_latest": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "failed_symbols": [],
+            "reference_latest_date": None,
         }
