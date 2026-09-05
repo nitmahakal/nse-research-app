@@ -100,21 +100,30 @@ class UpdateRealDataWorker(
                     null
                 }
             
+            val referenceLatestDate =
+                try {
+                    report.asMap()
+                        .get("reference_latest_date")
+                        ?.toString()
+                } catch (_: Exception) {
+                    null
+                }
+            
+            val output =
+                workDataOf(
+                    "report" to truncated,
+                    "status" to (status ?: "ERROR"),
+                    "reference_latest_date" to
+                        (referenceLatestDate ?: "")
+                )
+            
             if (status == "SUCCESS") {
             
-                Result.success(
-                    workDataOf(
-                        "report" to truncated
-                    )
-                )
+                Result.success(output)
             
             } else {
             
-                Result.failure(
-                    workDataOf(
-                        "report" to truncated
-                    )
-                )
+                Result.failure(output)
             }
             
         } catch (e: Exception) {
