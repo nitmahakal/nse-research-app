@@ -254,7 +254,7 @@ def _determine_reference_latest_date(
         reference_symbol: latest
     }
     
-    return reference_date, latest_by_symbol
+    
 
 def _classify_symbols(
     conn,
