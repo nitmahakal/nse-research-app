@@ -87,7 +87,7 @@ class UpdateRealDataWorker(
             /*
              * Python status:
              * SUCCESS -> WorkManager SUCCESS
-             * PARTIAL -> WorkManager SUCCESS
+             * PARTIAL -> WorkManager FAILURE
              * ERROR   -> WorkManager FAILURE
              */
 
@@ -100,9 +100,9 @@ class UpdateRealDataWorker(
                     null
                 }
 
-            if (status == "ERROR") {
+            if (status == "SUCCESS") {
 
-                Result.failure(
+                Result.success(
                     workDataOf(
                         "report" to truncated
                     )
@@ -110,13 +110,13 @@ class UpdateRealDataWorker(
 
             } else {
 
-                Result.success(
+                Result.failure(
                     workDataOf(
                         "report" to truncated
                     )
                 )
             }
-
+            
         } catch (e: Exception) {
 
             Log.e(
