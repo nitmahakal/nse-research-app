@@ -226,41 +226,34 @@ def _determine_reference_latest_date(
     symbols: List[str],
 ) -> Tuple[Optional[pd.Timestamp], Dict[str, pd.Timestamp]]:
 
-    """Get the latest actual date available from Yahoo Finance."""
+    """Get the latest actual market date from NIFTY."""
 
-    if not symbols:
-        return None, {}
+    reference_symbol = "^NSEI"
 
     try:
         raw = _download_chunk_raw(
-            symbols,
+            [reference_symbol],
             period=REFERENCE_PROBE_PERIOD,
         )
     except Exception:
         return None, {}
 
-    latest_by_symbol = {}
-
-    for symbol in symbols:
-        frame = _extract_symbol_frame(
-            raw,
-            symbol,
-        )
-
-        latest = _latest_date_from_frame(
-            frame
-        )
-
-        if latest is not None:
-            latest_by_symbol[symbol] = latest
-
-    if not latest_by_symbol:
-        return None, {}
-
-    reference_date = max(
-        latest_by_symbol.values()
+    frame = _extract_symbol_frame(
+        raw,
+        reference_symbol,
     )
 
+    latest = _latest_date_from_frame(
+        frame
+    )
+
+    if latest is None:
+        return None, {}
+
+    return latest, {
+        reference_symbol: latest
+    }
+    
     return reference_date, latest_by_symbol
 
 def _classify_symbols(
