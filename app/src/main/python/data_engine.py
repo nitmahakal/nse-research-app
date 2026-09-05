@@ -38,19 +38,26 @@ def load_symbol_list(symbols_csv_path: str) -> List[str]:
 
     symbols = []
 
+    special_symbols = {
+        "NIFTY": "^NSEI",
+        "SENSEX": "^BSESN",
+    }
+
     for value in df["SYMBOL"].dropna().astype(str):
         symbol = value.strip().upper()
 
         if not symbol:
             continue
 
-        if not symbol.endswith(".NS"):
+        if symbol in special_symbols:
+            symbol = special_symbols[symbol]
+
+        elif not symbol.endswith(".NS"):
             symbol = symbol + ".NS"
 
         symbols.append(symbol)
 
     return list(dict.fromkeys(symbols))
-
 
 def _normalise_date(value) -> Optional[pd.Timestamp]:
     if value is None:
