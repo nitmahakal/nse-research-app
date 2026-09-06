@@ -106,6 +106,22 @@ class UpdateRealDataWorker(
                     null
                 }
 
+            val marketDataThrough =
+                try {
+                    report.get("market_data_through")
+                        ?.toString()
+                } catch (_: Exception) {
+                    null
+                }
+
+            val lastUpdateFinished =
+                try {
+                    report.get("last_update_finished")
+                        ?.toString()
+                } catch (_: Exception) {
+                    null
+                }
+
             val updated =
                 try {
                     report.get("updated")
@@ -144,6 +160,10 @@ class UpdateRealDataWorker(
                     "status" to (status ?: "ERROR"),
                     "reference_latest_date" to
                         (referenceLatestDate ?: ""),
+                    "market_data_through" to
+                        (marketDataThrough ?: ""),
+                    "last_update_finished" to
+                        (lastUpdateFinished ?: ""),
                     "updated" to
                         (updated ?: "0"),
                     "up_to_date" to
