@@ -10,6 +10,7 @@ It is detected from actual Yahoo Finance market data.
 """
 
 import time
+from datetime import datetime
 from collections import Counter
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -1045,6 +1046,16 @@ def update_symbols(
             "failed_symbols": failed_list[:50],
             "reference_latest_date": (
                 reference_text
+            ),
+            "market_data_through": (
+                reference_latest_date.strftime(
+                    "%d-%m-%Y"
+                )
+            ),
+            "last_update_finished": (
+                datetime.now().strftime(
+                    "%d-%m-%Y %H:%M:%S"
+                )
             ),
             "status": (
                 "SUCCESS"
