@@ -27,7 +27,7 @@ REFERENCE_PROBE_SIZE = 100
 REFERENCE_PROBE_PERIOD = "5d"
 
 MAX_RETRIES = 2
-RETRY_DELAY_SECONDS = 3.0
+RETRY_DELAY_SECONDS = 0.75
 
 
 def load_symbol_list(symbols_csv_path: str) -> List[str]:
@@ -502,14 +502,10 @@ def _process_group(
                     "no stored date"
                 )
 
-            elif db_latest < reference_latest_date:
-
-                failed[symbol] = (
-                    "BEHIND_LATEST: DB has "
-                    f"{db_latest.strftime('%Y-%m-%d')} "
-                    "but reference is "
-                    f"{reference_latest_date.strftime('%Y-%m-%d')}"
-                )
+            # Older valid stock data is still usable.
+            # NIFTY latest date is only a market reference.
+            # Do not mark a stock as failed just because
+            # its latest available date is older.
 
         processed_count += len(chunk)
 
@@ -642,28 +638,12 @@ def _retry_failed_symbols(
                 final_ts = _normalise_date(
                     final_dates.get(symbol)
                 )
+                if final_ts is None:
 
-                if (
-                    final_ts is None
-                    or final_ts
-                    < reference_latest_date
-                ):
-
-                    if final_ts is None:
-
-                        still_failed[symbol] = (
-                            "DB_VERIFICATION_FAILED: "
-                            "no stored date after retry"
-                        )
-
-                    else:
-
-                        still_failed[symbol] = (
-                            "BEHIND_LATEST after retry: "
-                            f"{final_ts.strftime('%Y-%m-%d')} "
-                            "vs "
-                            f"{reference_latest_date.strftime('%Y-%m-%d')}"
-                        )
+                    still_failed[symbol] = (
+                        "DB_VERIFICATION_FAILED: "
+                        "no stored date after retry"
+                    )
 
         except Exception as exc:
 
@@ -683,7 +663,7 @@ def _retry_failed_symbols(
                 processed,
                 total,
                 (
-                    f"Retry: "
+                    f"FETCH FAILED - Retry 1/2: "
                     f"{processed}/{total}"
                 ),
             )
