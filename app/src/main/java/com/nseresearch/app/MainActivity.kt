@@ -434,81 +434,78 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     WorkInfo.State.SUCCEEDED -> {
-                    
+
                         updateRealDataButton.text =
-                            "Update Real Data"
-                    
-                        val report =
+                            "Update Complete"
+
+                        val updated =
                             info.outputData.getString(
-                                "report"
-                            ) ?: "(no report text)"
-                    
-                        val referenceLatestDate =
+                                "updated"
+                            ) ?: "0"
+
+                        val upToDate =
                             info.outputData.getString(
-                                "reference_latest_date"
+                                "up_to_date"
+                            ) ?: "0"
+
+                        val lastAvailable =
+                            info.outputData.getString(
+                                "last_available"
+                            ) ?: "0"
+
+                        val noData =
+                            info.outputData.getString(
+                                "no_data"
+                            ) ?: "0"
+
+                        val marketDataThrough =
+                            info.outputData.getString(
+                                "market_data_through"
                             ) ?: ""
-                    
-                        val dataThrough =
-                            if (referenceLatestDate.isNotBlank()) {
-                                try {
-                                    val parsedDate =
-                                        SimpleDateFormat(
-                                            "yyyy-MM-dd",
-                                            Locale.US
-                                        ).parse(
-                                            referenceLatestDate
-                                        )
-                    
-                                    if (parsedDate != null) {
-                                        SimpleDateFormat(
-                                            "dd-MM-yyyy",
-                                            Locale.getDefault()
-                                        ).format(parsedDate)
-                                    } else {
-                                        referenceLatestDate
-                                    }
-                    
-                                } catch (_: Exception) {
-                                    referenceLatestDate
-                                }
-                            } else {
-                                ""
-                            }
-                    
-                        val timestamp =
-                            SimpleDateFormat(
-                                "dd-MM-yyyy HH:mm:ss",
-                                Locale.getDefault()
-                            ).format(Date())
-                    
-                        val prefs =
-                            getSharedPreferences(
-                                updatePrefsName,
-                                Context.MODE_PRIVATE
-                            )
-                    
-                        prefs.edit()
-                            .putString(
-                                lastSuccessfulUpdateKey,
-                                timestamp
-                            )
-                            .putString(
-                                marketDataThroughKey,
-                                dataThrough
-                            )
-                            .apply()
-                    
+
+                        val lastUpdateFinished =
+                            info.outputData.getString(
+                                "last_update_finished"
+                            ) ?: ""
+
                         resultView.text =
-                            "Real data update SUCCEEDED:\n\n" +
-                                    "Market Data Through: " +
-                                    dataThrough +
-                                    "\n\n" +
+                            "Real Data Update Complete:\\n\\n" +
+                                    "Total Symbols       : " +
+                                    (
+                                        updated.toIntOrNull()
+                                            ?: 0
+                                    ) +
+                                    (
+                                        upToDate.toIntOrNull()
+                                            ?: 0
+                                    ) +
+                                    (
+                                        lastAvailable.toIntOrNull()
+                                            ?: 0
+                                    ) +
+                                    (
+                                        noData.toIntOrNull()
+                                            ?: 0
+                                    ) +
+                                    "\\n" +
+                                    "Updated             : " +
+                                    updated +
+                                    "\\n" +
+                                    "Up-To-Date          : " +
+                                    upToDate +
+                                    "\\n" +
+                                    "Last Available      : " +
+                                    lastAvailable +
+                                    "\\n" +
+                                    "No Data             : " +
+                                    noData +
+                                    "\\n\\n" +
+                                    "Market Data Through : " +
+                                    marketDataThrough +
+                                    "\\n" +
                                     "Last Update Finished: " +
-                                    timestamp +
-                                    "\n\n" +
-                                    report
+                                    lastUpdateFinished
                     }
-                    WorkInfo.State.FAILED -> {
 
                         updateRealDataButton.text =
                             "Update Real Data"
