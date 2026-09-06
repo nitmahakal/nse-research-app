@@ -850,6 +850,22 @@ def update_real_data_report(
                 "already_latest",
                 0,
             ),
+            "updated": report.get(
+                "updated",
+                0,
+            ),
+            "up_to_date": report.get(
+                "up_to_date",
+                0,
+            ),
+            "last_available": report.get(
+                "last_available",
+                0,
+            ),
+            "no_data": report.get(
+                "no_data",
+                0,
+            ),
             "succeeded": report.get(
                 "succeeded",
                 0,
