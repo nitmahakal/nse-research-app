@@ -881,6 +881,12 @@ def update_real_data_report(
             "reference_latest_date": report.get(
                 "reference_latest_date",
             ),
+            "market_data_through": report.get(
+                "market_data_through",
+            ),
+            "last_update_finished": report.get(
+                "last_update_finished",
+            ),
             "error": report.get(
                 "error",
             ),
