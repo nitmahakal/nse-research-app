@@ -942,12 +942,17 @@ def update_symbols(
 
         # -------------------------------------------------
         # STEP 6:
-        # FINAL DB VERIFICATION FOR ALL SYMBOLS.
+        # FINAL DB VERIFICATION AND CLASSIFICATION.
         # -------------------------------------------------
 
         final_dates = db.get_latest_dates(
             conn
         )
+
+        updated_count = 0
+        up_to_date_count = 0
+        last_available_count = 0
+        no_data_count = 0
 
         final_failed = {}
 
@@ -957,7 +962,13 @@ def update_symbols(
                 final_dates.get(symbol)
             )
 
+            original_ts = _normalise_date(
+                latest_dates.get(symbol)
+            )
+
             if final_ts is None:
+
+                no_data_count += 1
 
                 final_failed[symbol] = (
                     retry_failed.get(
@@ -969,28 +980,32 @@ def update_symbols(
                     )
                 )
 
-            elif final_ts < reference_latest_date:
+                continue
 
-                final_failed[symbol] = (
-                    retry_failed.get(
-                        symbol,
-                        (
-                            "BEHIND_LATEST: "
-                            f"{final_ts.strftime('%Y-%m-%d')} "
-                            "vs "
-                            f"{reference_text}"
-                        ),
-                    )
-                )
+            if final_ts >= reference_latest_date:
 
-        # Already-latest symbols count as success too.
-        succeeded = total - len(
-            final_failed
+                if (
+                    original_ts is None
+                    or final_ts > original_ts
+                ):
+
+                    updated_count += 1
+
+                else:
+
+                    up_to_date_count += 1
+
+            else:
+
+                last_available_count += 1
+
+        succeeded = (
+            updated_count
+            + up_to_date_count
+            + last_available_count
         )
 
-        failed = len(
-            final_failed
-        )
+        failed = no_data_count
 
         failed_list = [
             {
@@ -1008,7 +1023,7 @@ def update_symbols(
                 total,
                 (
                     f"Update complete: "
-                    f"{succeeded}/{total} latest"
+                    f"{succeeded}/{total} usable"
                 ),
             )
 
@@ -1021,6 +1036,10 @@ def update_symbols(
             "already_latest": len(
                 already_latest_symbols
             ),
+            "updated": updated_count,
+            "up_to_date": up_to_date_count,
+            "last_available": last_available_count,
+            "no_data": no_data_count,
             "succeeded": succeeded,
             "failed": failed,
             "failed_symbols": failed_list[:50],
