@@ -469,7 +469,7 @@ class MainActivity : AppCompatActivity() {
                             ) ?: ""
 
                         resultView.text =
-                            "Real Data Update Complete:\\n\\n" +
+                            "Real Data Update Complete:\n\n" +
                                     "Total Symbols       : " +
                                     (
                                         updated.toIntOrNull()
@@ -487,26 +487,26 @@ class MainActivity : AppCompatActivity() {
                                         noData.toIntOrNull()
                                             ?: 0
                                     ) +
-                                    "\\n" +
+                                    "\n" +
                                     "Updated             : " +
                                     updated +
-                                    "\\n" +
+                                    "\n" +
                                     "Up-To-Date          : " +
                                     upToDate +
-                                    "\\n" +
+                                    "\n" +
                                     "Last Available      : " +
                                     lastAvailable +
-                                    "\\n" +
+                                    "\n" +
                                     "No Data             : " +
                                     noData +
-                                    "\\n\\n" +
+                                    "\n\n" +
                                     "Market Data Through : " +
                                     marketDataThrough +
-                                    "\\n" +
+                                    "\n" +
                                     "Last Update Finished: " +
                                     lastUpdateFinished
                     }
-
+                    WorkInfo.State.FAILED -> {
                         updateRealDataButton.text =
                             "Update Real Data"
 
