@@ -531,7 +531,6 @@ def _process_group(
         failed,
     )
 
-
 def _retry_failed_symbols(
     conn,
     failed_symbols: List[str],
@@ -561,96 +560,175 @@ def _retry_failed_symbols(
             symbol,
         )
 
-        start_date = None
-
         previous_ts = _normalise_date(
             previous_date
         )
 
-        if previous_ts is not None:
+        success = False
+        last_reason = reasons.get(
+            symbol,
+            "NO_DATA",
+        )
 
-            start_date = (
-                previous_ts
-                + pd.Timedelta(days=1)
-            ).strftime(
-                "%Y-%m-%d"
-            )
+        for retry_no in range(
+            1,
+            MAX_RETRIES + 1,
+        ):
 
-        try:
+            try:
 
-            if start_date:
-
-                raw = _download_chunk_raw(
-                    [symbol],
-                    start=start_date,
-                )
-
-            else:
-
-                raw = _download_chunk_raw(
-                    [symbol],
-                    period="2y",
-                )
-
-            frame = _extract_symbol_frame(
-                raw,
-                symbol,
-            )
-
-            if frame.empty:
-
-                still_failed[symbol] = (
-                    reasons.get(
-                        symbol,
-                        "NO_DATA",
-                    )
-                )
-
-            else:
+                start_date = None
 
                 if previous_ts is not None:
 
-                    frame = frame[
-                        frame.index > previous_ts
-                    ]
-
-                rows = _rows_from_frame(
-                    symbol,
-                    frame,
-                )
-
-                if rows:
-
-                    rows = rows[
-                        -MAX_CANDLES:
-                    ]
-
-                    db.insert_price_rows_batch(
-                        conn,
-                        rows,
+                    start_date = (
+                        previous_ts
+                        + pd.Timedelta(days=1)
+                    ).strftime(
+                        "%Y-%m-%d"
                     )
 
-                # Final verification.
-                final_dates = (
-                    db.get_latest_dates(conn)
+                if start_date:
+
+                    raw = _download_chunk_raw(
+                        [symbol],
+                        start=start_date,
+                    )
+
+                else:
+
+                    raw = _download_chunk_raw(
+                        [symbol],
+                        period="2y",
+                    )
+
+                frame = _extract_symbol_frame(
+                    raw,
+                    symbol,
                 )
 
-                final_ts = _normalise_date(
-                    final_dates.get(symbol)
-                )
-                if final_ts is None:
+                if frame.empty:
 
-                    still_failed[symbol] = (
+                    last_reason = reasons.get(
+                        symbol,
+                        "NO_DATA",
+                    )
+
+                    # Old valid DB data is still usable.
+                    # Do not retry unnecessarily.
+                    if previous_ts is not None:
+
+                        final_date = (
+                            db.get_latest_date(
+                                conn,
+                                symbol,
+                            )
+                        )
+
+                        final_ts = _normalise_date(
+                            final_date
+                        )
+
+                        if final_ts is not None:
+                            success = True
+                            break
+
+                else:
+
+                    if previous_ts is not None:
+
+                        frame = frame[
+                            frame.index > previous_ts
+                        ]
+
+                    rows = _rows_from_frame(
+                        symbol,
+                        frame,
+                    )
+
+                    if rows:
+
+                        rows = rows[
+                            -MAX_CANDLES:
+                        ]
+
+                        db.insert_price_rows_batch(
+                            conn,
+                            rows,
+                        )
+
+                    # Final DB verification.
+                    final_date = (
+                        db.get_latest_date(
+                            conn,
+                            symbol,
+                        )
+                    )
+
+                    final_ts = _normalise_date(
+                        final_date
+                    )
+
+                    if final_ts is not None:
+
+                        success = True
+                        break
+
+                    last_reason = (
                         "DB_VERIFICATION_FAILED: "
                         "no stored date after retry"
                     )
 
-        except Exception as exc:
+            except Exception as exc:
 
-            still_failed[symbol] = (
-                "FETCH_ERROR after retry: "
-                + str(exc)
+                last_reason = (
+                    "FETCH_ERROR: "
+                    + str(exc)
+                )
+
+            # Retry only when another retry remains.
+            if retry_no < MAX_RETRIES:
+
+                processed = min(
+                    done_before + index + 1,
+                    total,
+                )
+
+                if on_progress:
+
+                    on_progress(
+                        processed,
+                        total,
+                        (
+                            "FETCH FAILED — "
+                            f"Retry {retry_no}/"
+                            f"{MAX_RETRIES}: "
+                            f"{processed}/{total}"
+                        ),
+                    )
+
+                time.sleep(
+                    RETRY_DELAY_SECONDS
+                )
+
+        if not success:
+
+            # One final check:
+            # old valid DB data must never be discarded.
+            final_date = db.get_latest_date(
+                conn,
+                symbol,
             )
+
+            final_ts = _normalise_date(
+                final_date
+            )
+
+            if final_ts is None:
+
+                still_failed[symbol] = (
+                    last_reason
+                )
 
         processed = min(
             done_before + index + 1,
@@ -663,22 +741,12 @@ def _retry_failed_symbols(
                 processed,
                 total,
                 (
-                    f"FETCH FAILED - Retry 1/2: "
+                    f"Retry complete: "
                     f"{processed}/{total}"
                 ),
             )
 
-        if (
-            symbol in still_failed
-            and index
-            < len(unique_symbols) - 1
-        ):
-            time.sleep(
-                RETRY_DELAY_SECONDS
-            )
-
     return still_failed
-
 
 def update_symbols(
     db_path: str,
