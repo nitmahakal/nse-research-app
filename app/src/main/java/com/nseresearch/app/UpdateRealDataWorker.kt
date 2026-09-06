@@ -98,7 +98,6 @@ class UpdateRealDataWorker(
                 } catch (_: Exception) {
                     null
                 }
-            
             val referenceLatestDate =
                 try {
                     report.get("reference_latest_date")
@@ -106,13 +105,53 @@ class UpdateRealDataWorker(
                 } catch (_: Exception) {
                     null
                 }
-            
+
+            val updated =
+                try {
+                    report.get("updated")
+                        ?.toString()
+                } catch (_: Exception) {
+                    null
+                }
+
+            val upToDate =
+                try {
+                    report.get("up_to_date")
+                        ?.toString()
+                } catch (_: Exception) {
+                    null
+                }
+
+            val lastAvailable =
+                try {
+                    report.get("last_available")
+                        ?.toString()
+                } catch (_: Exception) {
+                    null
+                }
+
+            val noData =
+                try {
+                    report.get("no_data")
+                        ?.toString()
+                } catch (_: Exception) {
+                    null
+                }
+
             val output =
                 workDataOf(
                     "report" to truncated,
                     "status" to (status ?: "ERROR"),
                     "reference_latest_date" to
-                        (referenceLatestDate ?: "")
+                        (referenceLatestDate ?: ""),
+                    "updated" to
+                        (updated ?: "0"),
+                    "up_to_date" to
+                        (upToDate ?: "0"),
+                    "last_available" to
+                        (lastAvailable ?: "0"),
+                    "no_data" to
+                        (noData ?: "0")
                 )
             
             if (status == "SUCCESS") {
