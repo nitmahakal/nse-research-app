@@ -540,8 +540,7 @@ def _retry_failed_symbols(
     on_progress: Optional[
         Callable[[int, int, str], None]
     ],
-    done_before: int,
-    total: int,
+    retry_label: str,
 ) -> Dict[str, str]:
 
     still_failed = {}
@@ -551,6 +550,11 @@ def _retry_failed_symbols(
             failed_symbols
         )
     )
+
+    retry_total = len(unique_symbols)
+
+    if retry_total == 0:
+        return still_failed
 
     for index, symbol in enumerate(
         unique_symbols
@@ -566,6 +570,7 @@ def _retry_failed_symbols(
         )
 
         success = False
+
         last_reason = reasons.get(
             symbol,
             "NO_DATA",
@@ -615,25 +620,6 @@ def _retry_failed_symbols(
                         "NO_DATA",
                     )
 
-                    # Old valid DB data is still usable.
-                    # Do not retry unnecessarily.
-                    if previous_ts is not None:
-
-                        final_date = (
-                            db.get_latest_date(
-                                conn,
-                                symbol,
-                            )
-                        )
-
-                        final_ts = _normalise_date(
-                            final_date
-                        )
-
-                        if final_ts is not None:
-                            success = True
-                            break
-
                 else:
 
                     if previous_ts is not None:
@@ -658,7 +644,6 @@ def _retry_failed_symbols(
                             rows,
                         )
 
-                    # Final DB verification.
                     final_date = (
                         db.get_latest_date(
                             conn,
@@ -677,7 +662,7 @@ def _retry_failed_symbols(
 
                     last_reason = (
                         "DB_VERIFICATION_FAILED: "
-                        "no stored date after retry"
+                        "no stored date"
                     )
 
             except Exception as exc:
@@ -687,24 +672,20 @@ def _retry_failed_symbols(
                     + str(exc)
                 )
 
-            # Retry only when another retry remains.
             if retry_no < MAX_RETRIES:
-
-                processed = min(
-                    done_before + index + 1,
-                    total,
-                )
 
                 if on_progress:
 
                     on_progress(
-                        processed,
-                        total,
+                        index + 1,
+                        retry_total,
                         (
-                            "FETCH FAILED — "
+                            f"{retry_label} "
                             f"Retry {retry_no}/"
                             f"{MAX_RETRIES}: "
-                            f"{processed}/{total}"
+                            f"{index + 1}/"
+                            f"{retry_total} "
+                            f"{symbol}"
                         ),
                     )
 
@@ -714,8 +695,6 @@ def _retry_failed_symbols(
 
         if not success:
 
-            # One final check:
-            # old valid DB data must never be discarded.
             final_date = db.get_latest_date(
                 conn,
                 symbol,
@@ -731,24 +710,7 @@ def _retry_failed_symbols(
                     last_reason
                 )
 
-        processed = min(
-            done_before + index + 1,
-            total,
-        )
-
-        if on_progress:
-
-            on_progress(
-                processed,
-                total,
-                (
-                    f"Retry complete: "
-                    f"{processed}/{total}"
-                ),
-            )
-
     return still_failed
-
 def update_symbols(
     db_path: str,
     symbols: List[str],
@@ -924,23 +886,48 @@ def update_symbols(
         # Retry everything that did not verify.
         # -------------------------------------------------
 
-        retry_failed = _retry_failed_symbols(
-            conn=conn,
-            failed_symbols=list(
-                failed_reasons.keys()
-            ),
-            reasons=failed_reasons,
-            reference_latest_date=(
-                reference_latest_date
-            ),
-            on_progress=on_progress,
-            done_before=(
-                len(full_symbols)
-                + len(incremental_symbols)
-            ),
-            total=total,
-        )
+        retry_failed = {}
 
+        if full_failed:
+        
+            full_retry_failed = (
+                _retry_failed_symbols(
+                    conn=conn,
+                    failed_symbols=full_failed,
+                    reasons=failed_reasons,
+                    reference_latest_date=(
+                        reference_latest_date
+                    ),
+                    on_progress=on_progress,
+                    retry_label="FULL",
+                )
+            )
+        
+            retry_failed.update(
+                full_retry_failed
+            )
+        
+        if incremental_failed:
+        
+            incremental_retry_failed = (
+                _retry_failed_symbols(
+                    conn=conn,
+                    failed_symbols=(
+                        incremental_failed
+                    ),
+                    reasons=failed_reasons,
+                    reference_latest_date=(
+                        reference_latest_date
+                    ),
+                    on_progress=on_progress,
+                    retry_label="INCREMENTAL",
+                )
+            )
+        
+            retry_failed.update(
+                incremental_retry_failed
+            )
+        
         # -------------------------------------------------
         # STEP 6:
         # FINAL DB VERIFICATION AND CLASSIFICATION.
@@ -954,6 +941,11 @@ def update_symbols(
         up_to_date_count = 0
         last_available_count = 0
         no_data_count = 0
+
+        updated_symbols = []
+        up_to_date_symbols = []
+        last_available_symbols = []
+        no_data_symbols -[]
 
         final_failed = {}
 
@@ -970,6 +962,8 @@ def update_symbols(
             if final_ts is None:
 
                 no_data_count += 1
+                
+            no_data_symbols.append(symbol)
 
                 final_failed[symbol] = (
                     retry_failed.get(
@@ -991,15 +985,21 @@ def update_symbols(
                 ):
 
                     updated_count += 1
-
+                updated_symbols.append(symbol
+                      )
+                
                 else:
 
                     up_to_date_count += 1
-
+                up_to_date_symbols.append(symbol
+                     )
+            
             else:
 
                 last_available_count += 1
-
+            last_available_symbols.append(symbol
+                 )
+        
         succeeded = (
             updated_count
             + up_to_date_count
@@ -1044,6 +1044,16 @@ def update_symbols(
             "succeeded": succeeded,
             "failed": failed,
             "failed_symbols": failed_list[:50],
+            "updated_symbols": updated_symbols[:100],
+            "up_to_date_symbols": (
+                up_to_date_symbols[:100]
+            ),
+            "last_available_symbols": (
+                last_available_symbols[:100]
+            ),
+            "no_data_symbols": (
+                no_data_symbols[:100]
+            ),
             "reference_latest_date": (
                 reference_text
             ),
