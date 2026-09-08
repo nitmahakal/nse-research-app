@@ -945,7 +945,7 @@ def update_symbols(
         updated_symbols = []
         up_to_date_symbols = []
         last_available_symbols = []
-        no_data_symbols -[]
+        no_data_symbols = []
 
         final_failed = {}
 
@@ -963,7 +963,7 @@ def update_symbols(
 
                 no_data_count += 1
                 
-            no_data_symbols.append(symbol)
+                no_data_symbols.append(symbol)
 
                 final_failed[symbol] = (
                     retry_failed.get(
@@ -985,19 +985,19 @@ def update_symbols(
                 ):
 
                     updated_count += 1
-                updated_symbols.append(symbol
+                    updated_symbols.append(symbol
                       )
                 
                 else:
 
                     up_to_date_count += 1
-                up_to_date_symbols.append(symbol
+                    up_to_date_symbols.append(symbol
                      )
             
             else:
 
                 last_available_count += 1
-            last_available_symbols.append(symbol
+                last_available_symbols.append(symbol
                  )
         
         succeeded = (
