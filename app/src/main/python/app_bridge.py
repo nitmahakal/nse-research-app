@@ -874,8 +874,20 @@ def update_real_data_report(
                 "failed",
                 0,
             ),
-            "failed_symbols": report.get(
-                "failed_symbols",
+            "updated_symbols": report.get(
+                "updated_symbols",
+                [],
+            ),
+            "up_to_date_symbols": report.get(
+                "up_to_date_symbols",
+                [],
+            ),
+            "last_available_symbols": report.get(
+                "last_available_symbols",
+                [],
+            ),
+            "no_data_symbols": report.get(
+                "no_data_symbols",
                 [],
             ),
             "reference_latest_date": report.get(
