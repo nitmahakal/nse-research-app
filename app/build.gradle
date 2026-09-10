@@ -52,13 +52,12 @@ chaquopy {
     defaultConfig {
         version "3.11"
         pip {
-            install "pandas"
-            install "numpy"
-            install "yfinance"
+            install "numpy==1.26.4"
+            install "pandas==2.2.3"
+            install "yfinance==0.2.66"
         }
     }
 }
-
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.appcompat:appcompat:1.7.0'
