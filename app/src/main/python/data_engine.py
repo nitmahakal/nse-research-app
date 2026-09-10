@@ -226,12 +226,14 @@ def _determine_reference_latest_date(
     symbols: List[str],
 ) -> Tuple[Optional[pd.Timestamp], Dict[str, pd.Timestamp]]:
 
-    """Get latest actual market date using NIFTY first, then SENSEX."""
+    """Get latest actual market date and expose probe failure reason."""
 
     reference_symbols = [
         "^NSEI",
         "^BSESN",
     ]
+
+    errors = []
 
     for reference_symbol in reference_symbols:
 
@@ -240,24 +242,73 @@ def _determine_reference_latest_date(
                 [reference_symbol],
                 period=REFERENCE_PROBE_PERIOD,
             )
-        except Exception:
+        except Exception as exc:
+
+            errors.append(
+                f"{reference_symbol} download error: "
+                f"{type(exc).__name__}: {exc}"
+            )
             continue
+
+        if raw is None:
+
+            errors.append(
+                f"{reference_symbol} returned None"
+            )
+            continue
+
+        if raw.empty:
+
+            errors.append(
+                f"{reference_symbol} returned empty DataFrame"
+            )
+            continue
+
+        try:
+
+            columns_text = str(
+                list(raw.columns)
+            )
+
+        except Exception:
+
+            columns_text = str(
+                raw.columns
+            )
 
         frame = _extract_symbol_frame(
             raw,
             reference_symbol,
         )
 
+        if frame.empty:
+
+            errors.append(
+                f"{reference_symbol} extraction failed. "
+                f"Shape={raw.shape}, "
+                f"Columns={columns_text}"
+            )
+            continue
+
         latest = _latest_date_from_frame(
             frame
         )
 
         if latest is not None:
+
             return latest, {
                 reference_symbol: latest
             }
 
-    return None, {}
+        errors.append(
+            f"{reference_symbol} latest date extraction failed. "
+            f"Shape={frame.shape}"
+        )
+
+    raise RuntimeError(
+        "REFERENCE DATE DIAGNOSTIC: "
+        + " | ".join(errors)
+    )
     
     
 
