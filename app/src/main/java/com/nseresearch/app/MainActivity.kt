@@ -566,6 +566,7 @@ class MainActivity : AppCompatActivity() {
                                         "Failed Stocks",
                                         noDataSymbols
                                     )
+                                }
                     WorkInfo.State.FAILED -> {
                         updateRealDataButton.text =
                             "Update Real Data"
