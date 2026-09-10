@@ -222,38 +222,42 @@ def _latest_date_from_frame(
     except Exception:
         return None
 
-
 def _determine_reference_latest_date(
     symbols: List[str],
 ) -> Tuple[Optional[pd.Timestamp], Dict[str, pd.Timestamp]]:
 
-    """Get the latest actual market date from NIFTY."""
+    """Get latest actual market date using NIFTY first, then SENSEX."""
 
-    reference_symbol = "^NSEI"
+    reference_symbols = [
+        "^NSEI",
+        "^BSESN",
+    ]
 
-    try:
-        raw = _download_chunk_raw(
-            [reference_symbol],
-            period=REFERENCE_PROBE_PERIOD,
+    for reference_symbol in reference_symbols:
+
+        try:
+            raw = _download_chunk_raw(
+                [reference_symbol],
+                period=REFERENCE_PROBE_PERIOD,
+            )
+        except Exception:
+            continue
+
+        frame = _extract_symbol_frame(
+            raw,
+            reference_symbol,
         )
-    except Exception:
-        return None, {}
 
-    frame = _extract_symbol_frame(
-        raw,
-        reference_symbol,
-    )
+        latest = _latest_date_from_frame(
+            frame
+        )
 
-    latest = _latest_date_from_frame(
-        frame
-    )
+        if latest is not None:
+            return latest, {
+                reference_symbol: latest
+            }
 
-    if latest is None:
-        return None, {}
-
-    return latest, {
-        reference_symbol: latest
-    }
+    return None, {}
     
     
 
