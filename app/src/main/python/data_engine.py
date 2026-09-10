@@ -148,8 +148,6 @@ def _extract_symbol_frame(
 
     except Exception:
         return pd.DataFrame()
-
-
 def _download_chunk_raw(
     tickers: List[str],
     start: Optional[str] = None,
@@ -160,7 +158,7 @@ def _download_chunk_raw(
         "tickers": tickers,
         "interval": "1d",
         "group_by": "ticker",
-        "threads": True,
+        "threads": False,
         "progress": False,
         "auto_adjust": False,
         "actions": False,
@@ -174,7 +172,6 @@ def _download_chunk_raw(
         kwargs["period"] = period
 
     return yf.download(**kwargs)
-
 
 def _rows_from_frame(
     symbol: str,
