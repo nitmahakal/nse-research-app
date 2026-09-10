@@ -226,90 +226,187 @@ def _determine_reference_latest_date(
     symbols: List[str],
 ) -> Tuple[Optional[pd.Timestamp], Dict[str, pd.Timestamp]]:
 
-    """Get latest actual market date and expose probe failure reason."""
+    """Deep diagnostic for Yahoo reference-date access."""
+
+    import sys
+    import requests
+    from urllib.parse import quote
 
     reference_symbols = [
         "^NSEI",
         "^BSESN",
     ]
 
-    errors = []
+    diagnostics = []
+
+    diagnostics.append(
+        f"ENV: python={sys.version.split()[0]}, "
+        f"pandas={pd.__version__}, "
+        f"yfinance={yf.__version__}"
+    )
 
     for reference_symbol in reference_symbols:
 
+        diagnostics.append(
+            f"--- {reference_symbol} ---"
+        )
+
+        # TEST 1: current yf.download() path
         try:
+
             raw = _download_chunk_raw(
                 [reference_symbol],
                 period=REFERENCE_PROBE_PERIOD,
             )
+
+            if raw is None:
+
+                diagnostics.append(
+                    "yf.download: None"
+                )
+
+            elif raw.empty:
+
+                diagnostics.append(
+                    f"yf.download: EMPTY shape={raw.shape}"
+                )
+
+            else:
+
+                diagnostics.append(
+                    f"yf.download: OK shape={raw.shape}"
+                )
+
+                frame = _extract_symbol_frame(
+                    raw,
+                    reference_symbol,
+                )
+
+                latest = _latest_date_from_frame(
+                    frame
+                )
+
+                if latest is not None:
+
+                    diagnostics.append(
+                        f"yf.download latest={latest}"
+                    )
+
+                    return latest, {
+                        reference_symbol: latest
+                    }
+
+                diagnostics.append(
+                    "yf.download extraction/latest failed"
+                )
+
         except Exception as exc:
 
-            errors.append(
-                f"{reference_symbol} download error: "
+            diagnostics.append(
+                "yf.download ERROR: "
                 f"{type(exc).__name__}: {exc}"
             )
-            continue
 
-        if raw is None:
-
-            errors.append(
-                f"{reference_symbol} returned None"
-            )
-            continue
-
-        if raw.empty:
-
-            errors.append(
-                f"{reference_symbol} returned empty DataFrame"
-            )
-            continue
-
+        # TEST 2: alternate yfinance Ticker.history()
         try:
 
-            columns_text = str(
-                list(raw.columns)
+            history = yf.Ticker(
+                reference_symbol
+            ).history(
+                period=REFERENCE_PROBE_PERIOD,
+                interval="1d",
+                auto_adjust=False,
             )
 
-        except Exception:
+            if history is None:
 
-            columns_text = str(
-                raw.columns
+                diagnostics.append(
+                    "Ticker.history: None"
+                )
+
+            elif history.empty:
+
+                diagnostics.append(
+                    f"Ticker.history: EMPTY shape={history.shape}"
+                )
+
+            else:
+
+                history_latest = _latest_date_from_frame(
+                    history
+                )
+
+                diagnostics.append(
+                    f"Ticker.history: OK shape={history.shape}, "
+                    f"latest={history_latest}"
+                )
+
+                if history_latest is not None:
+
+                    return history_latest, {
+                        reference_symbol: history_latest
+                    }
+
+        except Exception as exc:
+
+            diagnostics.append(
+                "Ticker.history ERROR: "
+                f"{type(exc).__name__}: {exc}"
             )
 
-        frame = _extract_symbol_frame(
-            raw,
+        # TEST 3 + 4: direct Yahoo chart endpoint
+        encoded_symbol = quote(
             reference_symbol,
+            safe=""
         )
 
-        if frame.empty:
+        for host in [
+            "query1.finance.yahoo.com",
+            "query2.finance.yahoo.com",
+        ]:
 
-            errors.append(
-                f"{reference_symbol} extraction failed. "
-                f"Shape={raw.shape}, "
-                f"Columns={columns_text}"
+            url = (
+                f"https://{host}/v8/finance/chart/"
+                f"{encoded_symbol}"
+                f"?range=5d&interval=1d"
             )
-            continue
 
-        latest = _latest_date_from_frame(
-            frame
-        )
+            try:
 
-        if latest is not None:
+                response = requests.get(
+                    url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 "
+                            "(Linux; Android 11) "
+                            "AppleWebKit/537.36 "
+                            "Chrome/120.0 Mobile Safari/537.36"
+                        )
+                    },
+                    timeout=15,
+                )
 
-            return latest, {
-                reference_symbol: latest
-            }
+                body = response.text
 
-        errors.append(
-            f"{reference_symbol} latest date extraction failed. "
-            f"Shape={frame.shape}"
-        )
+                diagnostics.append(
+                    f"HTTP {host}: "
+                    f"status={response.status_code}, "
+                    f"bytes={len(response.content)}, "
+                    f"type={response.headers.get('Content-Type')}, "
+                    f"body={body[:300]}"
+                )
+
+            except Exception as exc:
+
+                diagnostics.append(
+                    f"HTTP {host} ERROR: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     raise RuntimeError(
-        "REFERENCE DATE DIAGNOSTIC: "
-        + " | ".join(errors)
-    )
-    
+        "REFERENCE DEEP DIAGNOSTIC\n"
+        + "\n".join(diagnostics)
+    )    
     
 
 def _classify_symbols(
