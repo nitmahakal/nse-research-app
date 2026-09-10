@@ -468,6 +468,50 @@ class MainActivity : AppCompatActivity() {
                                 "last_update_finished"
                             ) ?: ""
 
+                       val updatedSymbols =
+                            info.outputData.getStringArray(
+                                "updated_symbols"
+                            ) ?: emptyArray()
+
+                        val upToDateSymbols =
+                            info.outputData.getStringArray(
+                                "up_to_date_symbols"
+                            ) ?: emptyArray()
+
+                        val lastAvailableSymbols =
+                            info.outputData.getStringArray(
+                                "last_available_symbols"
+                            ) ?: emptyArray()
+
+                        val noDataSymbols =
+                            info.outputData.getStringArray(
+                                "no_data_symbols"
+                            ) ?: emptyArray()
+
+                        fun makeList(
+                            title: String,
+                            symbols: Array<String>
+                        ): String {
+
+                            if (symbols.isEmpty()) {
+                                return "$title\nNone\n\n"
+                            }
+
+                            val text = StringBuilder()
+                            text.append(title)
+                            text.append("\n\n")
+
+                            symbols.forEachIndexed { index, symbol ->
+                                text.append(index + 1)
+                                text.append(". ")
+                                text.append(symbol)
+                                text.append("\n")
+                            }
+
+                            text.append("\n")
+                            return text.toString()
+                        }
+
                         resultView.text =
                             "Real Data Update Complete:\n\n" +
                                     "Total Symbols       : " +
@@ -504,8 +548,24 @@ class MainActivity : AppCompatActivity() {
                                     marketDataThrough +
                                     "\n" +
                                     "Last Update Finished: " +
-                                    lastUpdateFinished
-                    }
+                                    lastUpdateFinished +
+                                    "\n\n" +
+                                    makeList(
+                                        "Updated Stocks",
+                                        updatedSymbols
+                                    ) +
+                                    makeList(
+                                        "Up-To-Date Stocks",
+                                        upToDateSymbols
+                                    ) +
+                                    makeList(
+                                        "Last Available Stocks",
+                                        lastAvailableSymbols
+                                    ) +
+                                    makeList(
+                                        "Failed Stocks",
+                                        noDataSymbols
+                                    )
                     WorkInfo.State.FAILED -> {
                         updateRealDataButton.text =
                             "Update Real Data"
