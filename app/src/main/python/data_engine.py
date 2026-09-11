@@ -223,80 +223,52 @@ def _determine_reference_latest_date(
     symbols: List[str],
 ) -> Tuple[Optional[pd.Timestamp], Dict[str, pd.Timestamp]]:
 
-    """Get latest completed NIFTY trading date."""
+    """Get the newest valid date from a small reference basket."""
+
+    reference_symbols = [
+        "^NSEI",
+        "^BSESN",
+        "RELIANCE.NS",
+        "HDFCBANK.NS",
+        "ICICIBANK.NS",
+        "SBIN.NS",
+        "INFY.NS",
+        "TCS.NS",
+        "BHARTIARTL.NS",
+    ]
+
+    latest_dates = {}
 
     try:
-
         raw = _download_chunk_raw(
-            ["^NSEI"],
+            reference_symbols,
             period="5d",
         )
-
-        frame = _extract_symbol_frame(
-            raw,
-            "^NSEI",
-        )
-
-        latest = _latest_date_from_frame(
-            frame
-        )
-
-        if latest is not None:
-            return latest, {
-                "^NSEI": latest
-            }
-
     except Exception:
-        pass
+        return None, {}
 
-    return None, {}    
+    for symbol in reference_symbols:
 
-def _classify_symbols(
-    conn,
-    symbols: List[str],
-    reference_latest_date: pd.Timestamp,
-) -> Tuple[
-    List[str],
-    List[str],
-    List[str],
-    Dict[str, str],
-]:
-    """Classify symbols using the actual reference date."""
+        try:
+            frame = _extract_symbol_frame(
+                raw,
+                symbol,
+            )
 
-    latest_dates = db.get_latest_dates(conn)
+            latest = _latest_date_from_frame(
+                frame
+            )
 
-    full_download = []
-    incremental = []
-    already_latest = []
+            if latest is not None:
+                latest_dates[symbol] = latest
 
-    for symbol in symbols:
-
-        stored = latest_dates.get(symbol)
-
-        if not stored:
-            full_download.append(symbol)
+        except Exception:
             continue
 
-        last_ts = _normalise_date(
-            stored
-        )
+    if not latest_dates:
+        return None, {}
 
-        if last_ts is None:
-            full_download.append(symbol)
-            continue
-
-        if last_ts < reference_latest_date:
-            incremental.append(symbol)
-        else:
-            already_latest.append(symbol)
-
-    return (
-        full_download,
-        incremental,
-        already_latest,
-        latest_dates,
-    )
-
+    return max(latest_dates.values()), latest_dates
 
 def _process_group(
     conn,
@@ -312,6 +284,7 @@ def _process_group(
 ) -> Tuple[List[str], Dict[str, str]]:
 
     failed = {}
+    fetch_error = {}
     processed_count = 0
 
     if not symbols:
@@ -394,6 +367,10 @@ def _process_group(
             if frame.empty:
 
                 if fetch_error:
+                    fetch_errors[symbol] = (
+                        "FETCH_ERROR: "
+                        + fetch_error
+                    )
                     failed[symbol] = (
                         "FETCH_ERROR: "
                         + fetch_error
@@ -402,9 +379,8 @@ def _process_group(
                     failed[symbol] = (
                         "NO_DATA"
                     )
-
+            
                 continue
-
             if mode == "incremental":
 
                 last_date = _normalise_date(
@@ -475,33 +451,12 @@ def _process_group(
                     + insert_error
                 )
 
-        # IMPORTANT:
-        # Verify the actual DB state after insertion.
-        verified_latest = db.get_latest_dates(
-            conn
-        )
-
-        for symbol in candidate_symbols:
-
-            if symbol in failed:
-                continue
-
-            db_latest = _normalise_date(
-                verified_latest.get(symbol)
-            )
-
-            if db_latest is None:
-
-                failed[symbol] = (
-                    "DB_VERIFICATION_FAILED: "
-                    "no stored date"
-                )
-
-            # Older valid stock data is still usable.
-            # NIFTY latest date is only a market reference.
-            # Do not mark a stock as failed just because
-            # its latest available date is older.
-
+        # DB state will be verified once at the end
+        # of the complete update, not after every chunk.
+        
+        # Older valid stock data is still usable.
+        # Do not mark a stock as failed just because
+        # its latest available date is older.
         processed_count += len(chunk)
 
         processed = min(
@@ -524,6 +479,7 @@ def _process_group(
     return (
         list(failed.keys()),
         failed,
+        fetch_errors
     )
 
 def _retry_failed_symbols(
@@ -755,31 +711,12 @@ def update_symbols(
 
         if reference_latest_date is None:
 
-            return {
-                "total": total,
-                "full": 0,
-                "incremental": 0,
-                "already_latest": 0,
-                "succeeded": 0,
-                "failed": total,
-                "failed_symbols": [
-                    {
-                        "symbol": symbol,
-                        "reason": (
-                            "REFERENCE_DATE_FETCH_FAILED"
-                        ),
-                    }
-                    for symbol in symbols[:50]
-                ],
-                "reference_latest_date": None,
-                "status": "ERROR",
-                "error": (
-                    "Could not determine the "
-                    "latest market-data date."
-                ),
-            }
-
-        reference_text = (
+            # Reference basket may fail because of a
+            # temporary Yahoo/network error.
+            # Do not mark all symbols as failed.
+            # Let normal stock downloads continue.
+            reference_latest_date = pd.Timestamp.min
+                reference_text = (
             reference_latest_date.strftime(
                 "%Y-%m-%d"
             )
@@ -832,105 +769,85 @@ def update_symbols(
         # Full downloads.
         # -------------------------------------------------
 
-        full_failed, full_reasons = (
-            _process_group(
-                conn=conn,
-                symbols=full_symbols,
-                latest_dates=latest_dates,
-                mode="full",
-                reference_latest_date=(
-                    reference_latest_date
-                ),
-                on_progress=on_progress,
-                done_before=0,
-                total=total,
-            )
+        # STEP 3 Incremental first
+        incremental_failed, incremental_reasons, incremental_fetch_errors = _process_group(
+            conn=conn,
+            symbols=incremental_symbols,
+            latest_dates=latest_dates,
+            mode="incremental",
+            reference_latest_date=reference_latest_date,
+            on_progress=on_progress,
+            done_before=0,
+            total=total,
         )
-
-        failed_reasons.update(
-            full_reasons
-        )
-
-        # -------------------------------------------------
-        # STEP 4:
-        # Incremental downloads.
-        # -------------------------------------------------
-
-        incremental_failed, incremental_reasons = (
-            _process_group(
-                conn=conn,
-                symbols=incremental_symbols,
-                latest_dates=latest_dates,
-                mode="incremental",
-                reference_latest_date=(
-                    reference_latest_date
-                ),
-                on_progress=on_progress,
-                done_before=len(full_symbols),
-                total=total,
-            )
-        )
-
-        failed_reasons.update(
-            incremental_reasons
-        )
-
-        # -------------------------------------------------
-        # STEP 5:
-        # Retry everything that did not verify.
-        # -------------------------------------------------
-
-        retry_failed = {}
-
-        if full_failed:
+        failed_reasons.update(incremental_reasons)
         
-            full_retry_failed = (
-                _retry_failed_symbols(
-                    conn=conn,
-                    failed_symbols=full_failed,
-                    reasons=failed_reasons,
-                    reference_latest_date=(
-                        reference_latest_date
-                    ),
-                    on_progress=on_progress,
-                    retry_label="FULL",
+        # STEP 4 Full/New second
+        full_failed, full_reasons, full_fetch_errors = _process_group(
+            conn=conn,
+            symbols=full_symbols,
+            latest_dates=latest_dates,
+            mode="full",
+            reference_latest_date=reference_latest_date,
+            on_progress=on_progress,
+            done_before=len(incremental_symbols),
+            total=total,
+        )
+        
+        failed_reasons.update(full_reasons)
+        fetch_errors = {}
+        fetch_errors.update(incremental_fetch_errors)
+        fetch_errors.update(full_fetch_errors)
+                # -------------------------------------------------
+                # STEP 5:
+                # Retry everything that did not verify.
+                # -------------------------------------------------
+                # STEP 5: One combined retry for all failed symbols.
+                retry_failed = {}
+                
+                all_failed_symbols = list(
+                    dict.fromkeys(
+                        full_failed + incremental_failed
+                    )
                 )
-            )
-        
-            retry_failed.update(
-                full_retry_failed
-            )
-        
-        if incremental_failed:
-        
-            incremental_retry_failed = (
-                _retry_failed_symbols(
-                    conn=conn,
-                    failed_symbols=(
-                        incremental_failed
-                    ),
-                    reasons=failed_reasons,
-                    reference_latest_date=(
-                        reference_latest_date
-                    ),
-                    on_progress=on_progress,
-                    retry_label="INCREMENTAL",
-                )
-            )
-        
-            retry_failed.update(
-                incremental_retry_failed
-            )
-        
+                
+                if all_failed_symbols:
+                
+                    retry_failed = _retry_failed_symbols(
+                        conn=conn,
+                        failed_symbols=all_failed_symbols,
+                        reasons=failed_reasons,
+                        reference_latest_date=reference_latest_date,
+                        on_progress=on_progress,
+                        retry_label="",
+                    )
+                                
+                                
         # -------------------------------------------------
         # STEP 6:
         # FINAL DB VERIFICATION AND CLASSIFICATION.
         # -------------------------------------------------
 
-        final_dates = db.get_latest_dates(
-            conn
-        )
+        final_dates = db.get_latest_dates(conn)
 
+        # If the reference basket failed, use the newest
+        # actual date available in the database.
+        if reference_latest_date == pd.Timestamp.min:
+        
+            stored_dates = []
+        
+            for value in final_dates.values():
+        
+                ts = _normalise_date(value)
+        
+                if ts is not None:
+                    stored_dates.append(ts)
+        
+            if stored_dates:
+                reference_latest_date = max(stored_dates)
+            else:
+                reference_latest_date = None
+        
         updated_count = 0
         up_to_date_count = 0
         last_available_count = 0
@@ -941,7 +858,9 @@ def update_symbols(
         last_available_symbols = []
         no_data_symbols = []
 
+        
         final_failed = {}
+        fetch_error_symbols = []
 
         for symbol in symbols:
 
@@ -955,33 +874,46 @@ def update_symbols(
 
             if final_ts is None:
 
+                if symbol in fetch_errors:
+            
+                    fetch_error_symbols.append(symbol)
+            
                 no_data_count += 1
-                
                 no_data_symbols.append(symbol)
-
-                final_failed[symbol] = (
-                    retry_failed.get(
+            
+                final_failed[symbol] = retry_failed.get(
+                    symbol,
+                    fetch_errors.get(
                         symbol,
                         failed_reasons.get(
                             symbol,
                             "NO_DATA",
                         ),
-                    )
+                    ),
                 )
-
+            
                 continue
-
-            if final_ts >= reference_latest_date:
-
+            if reference_latest_date is None:
+            
+                last_available_count += 1
+                last_available_symbols.append(symbol)
+            
+            elif final_ts >= reference_latest_date:
+            
                 if (
                     original_ts is None
                     or final_ts > original_ts
                 ):
-
                     updated_count += 1
-                    updated_symbols.append(symbol
-                      )
-                
+                    updated_symbols.append(symbol)
+                else:
+                    up_to_date_count += 1
+                    up_to_date_symbols.append(symbol)
+            
+            else:
+            
+                last_available_count += 1
+                last_available_symbols.append(symbol)                
                 else:
 
                     up_to_date_count += 1
@@ -1038,6 +970,8 @@ def update_symbols(
             "succeeded": succeeded,
             "failed": failed,
             "failed_symbols": failed_list[:50],
+            "fetch_error": len(fetch_error_symbols),
+            "fetch_error_symbols": fetch_error_symbols[:50],
             "updated_symbols": updated_symbols[:100],
             "up_to_date_symbols": (
                 up_to_date_symbols[:100]
