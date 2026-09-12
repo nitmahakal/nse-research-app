@@ -398,11 +398,19 @@ class MainActivity : AppCompatActivity() {
             .observe(this) { infos ->
 
                 val info =
-                    infos.firstOrNull()
-                        ?: return@observe
+                    infos.firstOrNull {
+                        it.state == WorkInfo.State.RUNNING ||
+                        it.state == WorkInfo.State.ENQUEUED ||
+                        it.state == WorkInfo.State.BLOCKED
+                    }
+                    ?: infos.firstOrNull {
+                        it.state == WorkInfo.State.SUCCEEDED ||
+                        it.state == WorkInfo.State.FAILED ||
+                        it.state == WorkInfo.State.CANCELLED
+                    }
+                    ?: return@observe
 
                 when (info.state) {
-
                     WorkInfo.State.RUNNING -> {
 
                         updateRealDataButton.text =
