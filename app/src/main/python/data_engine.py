@@ -661,6 +661,7 @@ def _retry_failed_symbols(
                 )
 
     return still_failed
+
 def update_symbols(
     db_path: str,
     symbols: List[str],
@@ -672,7 +673,6 @@ def update_symbols(
     total = len(symbols)
 
     if total == 0:
-
         return {
             "total": 0,
             "full": 0,
@@ -687,27 +687,31 @@ def update_symbols(
             "failed_symbols": [],
             "fetch_error": 0,
             "fetch_error_symbols": [],
+            "updated_symbols": [],
+            "up_to_date_symbols": [],
+            "last_available_symbols": [],
+            "no_data_symbols": [],
             "reference_latest_date": None,
+            "market_data_through": None,
+            "last_update_finished": None,
+            "status": "SUCCESS",
         }
 
-    conn = db.get_connection(
-        db_path
-    )
+    conn = db.get_connection(db_path)
 
     try:
 
-        if on_progress:
+        # -------------------------------------------------
+        # STEP 1:
+        # Detect latest market date ONCE.
+        # -------------------------------------------------
 
+        if on_progress:
             on_progress(
                 0,
                 total,
                 "Detecting latest market date...",
             )
-
-        # -------------------------------------------------
-        # STEP 1:
-        # Discover actual latest market date.
-        # -------------------------------------------------
 
         reference_latest_date, _ = (
             _determine_reference_latest_date(
@@ -720,13 +724,10 @@ def update_symbols(
         )
 
         if reference_detection_failed:
-
             reference_text = (
-                "Unavailable - using stored/latest data"
+                "Unavailable - using stored data"
             )
-
         else:
-
             reference_text = (
                 reference_latest_date.strftime(
                     "%Y-%m-%d"
@@ -734,7 +735,6 @@ def update_symbols(
             )
 
         if on_progress:
-
             on_progress(
                 0,
                 total,
@@ -746,59 +746,38 @@ def update_symbols(
 
         # -------------------------------------------------
         # STEP 2:
-        # Classify symbols.
+        # Classify once.
         # -------------------------------------------------
 
-        if reference_latest_date is not None:
+        latest_dates = db.get_latest_dates(conn)
 
-            (
-                full_symbols,
-                incremental_symbols,
-                already_latest_symbols,
-                latest_dates,
-            ) = _classify_symbols(
-                conn,
-                symbols,
-                reference_latest_date,
-            )
+        full_symbols = []
+        incremental_symbols = []
+        already_latest_symbols = []
 
-        else:
+        for symbol in symbols:
 
-            # Reference basket failed.
-            # Do not falsely mark existing symbols
-            # as already latest.
-            latest_dates = db.get_latest_dates(
-                conn
-            )
+            stored = latest_dates.get(symbol)
 
-            full_symbols = []
-            incremental_symbols = []
-            already_latest_symbols = []
+            if stored is None:
+                full_symbols.append(symbol)
+                continue
 
-            for symbol in symbols:
+            stored_ts = _normalise_date(stored)
 
-                stored = latest_dates.get(
-                    symbol
-                )
+            if stored_ts is None:
+                full_symbols.append(symbol)
+                continue
 
-                stored_ts = _normalise_date(
-                    stored
-                )
-
-                if stored_ts is None:
-
-                    full_symbols.append(
-                        symbol
-                    )
-
-                else:
-
-                    incremental_symbols.append(
-                        symbol
-                    )
+            if (
+                reference_latest_date is not None
+                and stored_ts >= reference_latest_date
+            ):
+                already_latest_symbols.append(symbol)
+            else:
+                incremental_symbols.append(symbol)
 
         if on_progress:
-
             on_progress(
                 0,
                 total,
@@ -815,7 +794,7 @@ def update_symbols(
 
         # -------------------------------------------------
         # STEP 3:
-        # Incremental first.
+        # Incremental update FIRST.
         # -------------------------------------------------
 
         (
@@ -830,7 +809,7 @@ def update_symbols(
             reference_latest_date=reference_latest_date,
             on_progress=on_progress,
             done_before=0,
-            total=total,
+            total=len(incremental_symbols),
         )
 
         failed_reasons.update(
@@ -843,7 +822,7 @@ def update_symbols(
 
         # -------------------------------------------------
         # STEP 4:
-        # Full/New second.
+        # Full/New update SECOND.
         # -------------------------------------------------
 
         (
@@ -857,10 +836,8 @@ def update_symbols(
             mode="full",
             reference_latest_date=reference_latest_date,
             on_progress=on_progress,
-            done_before=len(
-                incremental_symbols
-            ),
-            total=total,
+            done_before=0,
+            total=len(full_symbols),
         )
 
         failed_reasons.update(
@@ -873,10 +850,8 @@ def update_symbols(
 
         # -------------------------------------------------
         # STEP 5:
-        # Retry all failed symbols once.
+        # Retry failed symbols ONCE.
         # -------------------------------------------------
-
-        retry_failed = {}
 
         all_failed_symbols = list(
             dict.fromkeys(
@@ -885,17 +860,17 @@ def update_symbols(
             )
         )
 
+        retry_failed = {}
+
         if all_failed_symbols:
 
-            retry_failed = (
-                _retry_failed_symbols(
-                    conn=conn,
-                    failed_symbols=all_failed_symbols,
-                    reasons=failed_reasons,
-                    reference_latest_date=reference_latest_date,
-                    on_progress=on_progress,
-                    retry_label="",
-                )
+            retry_failed = _retry_failed_symbols(
+                conn=conn,
+                failed_symbols=all_failed_symbols,
+                reasons=failed_reasons,
+                reference_latest_date=reference_latest_date,
+                on_progress=on_progress,
+                retry_label="",
             )
 
         # -------------------------------------------------
@@ -903,49 +878,30 @@ def update_symbols(
         # Final DB verification.
         # -------------------------------------------------
 
-        final_dates = db.get_latest_dates(
-            conn
-        )
+        final_dates = db.get_latest_dates(conn)
 
-        # If reference detection failed,
-        # use newest valid date actually stored.
+        # If reference detection failed, use the
+        # newest date actually stored in the database.
         if reference_latest_date is None:
 
             stored_dates = []
 
             for value in final_dates.values():
 
-                ts = _normalise_date(
-                    value
-                )
+                ts = _normalise_date(value)
 
                 if ts is not None:
-
-                    stored_dates.append(
-                        ts
-                    )
+                    stored_dates.append(ts)
 
             if stored_dates:
-
                 reference_latest_date = max(
                     stored_dates
-                )
-
-                reference_text = (
-                    reference_latest_date.strftime(
-                        "%Y-%m-%d"
-                    )
                 )
 
         # -------------------------------------------------
         # STEP 7:
         # Final classification.
         # -------------------------------------------------
-
-        updated_count = 0
-        up_to_date_count = 0
-        last_available_count = 0
-        no_data_count = 0
 
         updated_symbols = []
         up_to_date_symbols = []
@@ -968,17 +924,13 @@ def update_symbols(
             if final_ts is None:
 
                 if symbol in fetch_errors:
-
                     fetch_error_symbols.append(
                         symbol
                     )
 
-                else:
-
-                    no_data_count += 1
-                    no_data_symbols.append(
-                        symbol
-                    )
+                no_data_symbols.append(
+                    symbol
+                )
 
                 final_failed[symbol] = (
                     retry_failed.get(
@@ -997,36 +949,47 @@ def update_symbols(
 
             if reference_latest_date is None:
 
-                last_available_count += 1
                 last_available_symbols.append(
                     symbol
                 )
 
-            elif final_ts >= reference_latest_date:
+                continue
+
+            if final_ts >= reference_latest_date:
 
                 if (
                     original_ts is None
                     or final_ts > original_ts
                 ):
-
-                    updated_count += 1
                     updated_symbols.append(
                         symbol
                     )
-
                 else:
-
-                    up_to_date_count += 1
                     up_to_date_symbols.append(
                         symbol
                     )
 
             else:
 
-                last_available_count += 1
                 last_available_symbols.append(
                     symbol
                 )
+
+        updated_count = len(
+            updated_symbols
+        )
+
+        up_to_date_count = len(
+            up_to_date_symbols
+        )
+
+        last_available_count = len(
+            last_available_symbols
+        )
+
+        no_data_count = len(
+            no_data_symbols
+        )
 
         succeeded = (
             updated_count
@@ -1046,20 +1009,15 @@ def update_symbols(
         ]
 
         if on_progress:
-
             on_progress(
                 total,
                 total,
-                (
-                    f"Update complete: "
-                    f"{succeeded}/{total} usable"
-                ),
+                "Update complete",
             )
 
         market_data_through = None
 
         if reference_latest_date is not None:
-
             market_data_through = (
                 reference_latest_date.strftime(
                     "%d-%m-%Y"
@@ -1081,9 +1039,7 @@ def update_symbols(
             "no_data": no_data_count,
             "succeeded": succeeded,
             "failed": failed,
-            "failed_symbols": (
-                failed_list[:50]
-            ),
+            "failed_symbols": failed_list[:50],
             "fetch_error": len(
                 fetch_error_symbols
             ),
@@ -1121,5 +1077,5 @@ def update_symbols(
         }
 
     finally:
-
         conn.close()
+
