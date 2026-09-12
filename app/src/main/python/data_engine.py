@@ -1,17 +1,20 @@
 """Raw market-data downloader/updater.
 
-IMPORTANT:
-Update does ZERO indicator/scanner calculations.
-It only downloads raw daily close data and stores it in SQLite.
+The updater downloads DAILY market data only.
 
-UPDATE RULE:
-Update means: available market data through the latest valid
-market date detected from actual Yahoo Finance data.
+Architecture:
+    Yahoo Finance DAILY data
+        -> SQLite DAILY history
+        -> scanner/resampling creates higher timeframes later
 
-IMPORTANT BATCH SAFETY:
-Every ticker in a Yahoo batch is extracted from that ticker's
-own columns only. Dates and Close values are never shared between
-different tickers.
+Important:
+- Yahoo initial download uses period="max".
+- SQLite keeps all available daily history.
+- No 2000-candle retention limit.
+- Existing symbols fetch only dates missing from their DB history.
+- Each Yahoo ticker is extracted only from its own columns.
+- One bad/empty ticker must not contaminate another ticker.
+- Update does not calculate indicators or scanner results.
 """
 
 from datetime import datetime
@@ -23,12 +26,27 @@ import yfinance as yf
 import db
 
 
-MAX_CANDLES = 2000
+# ---------------------------------------------------------
+# Download configuration
+# ---------------------------------------------------------
+
 CHUNK_SIZE = 50
 
-# Small probe used only to discover the actual latest market date.
+# Controlled parallelism.
+# Do not use unlimited threads because Yahoo rate limiting
+# has occurred previously.
+YF_THREADS = 8
+
+# Small probe used only to discover the current market date.
 REFERENCE_PROBE_PERIOD = "5d"
 
+# One retry only for a completely failed/empty batch.
+MAX_BATCH_RETRIES = 1
+
+
+# ---------------------------------------------------------
+# Symbol loading
+# ---------------------------------------------------------
 
 def load_symbol_list(symbols_csv_path: str) -> List[str]:
     df = pd.read_csv(symbols_csv_path)
@@ -57,8 +75,13 @@ def load_symbol_list(symbols_csv_path: str) -> List[str]:
 
         symbols.append(symbol)
 
+    # Preserve original order and remove duplicates.
     return list(dict.fromkeys(symbols))
 
+
+# ---------------------------------------------------------
+# Date helpers
+# ---------------------------------------------------------
 
 def _normalise_date(value) -> Optional[pd.Timestamp]:
     if value is None:
@@ -76,29 +99,48 @@ def _normalise_date(value) -> Optional[pd.Timestamp]:
         return None
 
 
+# ---------------------------------------------------------
+# Yahoo batch extraction
+# ---------------------------------------------------------
+
 def _extract_symbol_frame(
     raw: pd.DataFrame,
     symbol: str,
     requested_ticker_count: int = 1,
 ) -> pd.DataFrame:
-    """Extract ONLY one ticker's own OHLC frame from a Yahoo response."""
+    """Extract ONLY the requested ticker's own data.
+
+    This function is intentionally strict.
+
+    For a multi-ticker response:
+        (TICKER, FIELD)
+
+    or:
+        (FIELD, TICKER)
+
+    only the requested ticker is extracted.
+
+    A flat multi-ticker response is rejected because it cannot
+    safely be assigned to a particular ticker.
+    """
 
     if raw is None or raw.empty:
         return pd.DataFrame()
 
     try:
+
         if isinstance(raw.columns, pd.MultiIndex):
 
             level0 = raw.columns.get_level_values(0)
             level1 = raw.columns.get_level_values(1)
 
-            # Normal yfinance group_by="ticker" layout:
-            # (SYMBOL, Open/High/Low/Close/...)
+            # Normal group_by="ticker" layout:
+            # (SYMBOL, Open/High/Low/Close...)
             if symbol in level0:
                 frame = raw[symbol].copy()
 
-            # Defensive support for the opposite MultiIndex layout:
-            # (Open/High/Low/Close/..., SYMBOL)
+            # Defensive support for:
+            # (Open/High/Low/Close..., SYMBOL)
             elif symbol in level1:
                 frame = raw.xs(
                     symbol,
@@ -107,13 +149,11 @@ def _extract_symbol_frame(
                 ).copy()
 
             else:
-                # This ticker is not present in this batch.
                 return pd.DataFrame()
 
         else:
-            # A flat response is safe only when exactly one ticker
-            # was requested. Never treat a flat multi-ticker response
-            # as belonging to every ticker.
+
+            # A flat response is safe only for one ticker.
             if requested_ticker_count != 1:
                 return pd.DataFrame()
 
@@ -122,27 +162,8 @@ def _extract_symbol_frame(
         if "Close" not in frame.columns:
             return pd.DataFrame()
 
-        # Keep ONLY Close from this ticker's own frame.
+        # We intentionally store daily CLOSE only.
         frame = frame[["Close"]].copy()
-
-        frame = frame.dropna(
-            subset=["Close"]
-        )
-
-        frame.index = pd.to_datetime(
-            frame.index
-        )
-
-        if getattr(
-            frame.index,
-            "tz",
-            None,
-        ) is not None:
-            frame.index = frame.index.tz_localize(
-                None
-            )
-
-        frame.index = frame.index.normalize()
 
         frame["Close"] = pd.to_numeric(
             frame["Close"],
@@ -153,19 +174,41 @@ def _extract_symbol_frame(
             subset=["Close"]
         )
 
+        if frame.empty:
+            return pd.DataFrame()
+
+        # Convert index once.
+        frame.index = pd.to_datetime(
+            frame.index,
+            errors="coerce",
+        )
+
+        if getattr(frame.index, "tz", None) is not None:
+            frame.index = frame.index.tz_localize(None)
+
+        frame.index = frame.index.normalize()
+
+        # Remove invalid dates.
+        frame = frame[
+            ~pd.isna(frame.index)
+        ]
+
+        # Keep last value if Yahoo ever returns duplicate dates.
         frame = frame[
             ~frame.index.duplicated(
                 keep="last"
             )
         ]
 
-        frame = frame.sort_index()
-
-        return frame
+        return frame.sort_index()
 
     except Exception:
         return pd.DataFrame()
 
+
+# ---------------------------------------------------------
+# Yahoo download
+# ---------------------------------------------------------
 
 def _download_chunk_raw(
     tickers: List[str],
@@ -173,13 +216,16 @@ def _download_chunk_raw(
     end: Optional[str] = None,
     period: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Download one batch from Yahoo Finance."""
+    """Download one Yahoo Finance batch."""
 
     kwargs = {
         "tickers": tickers,
         "interval": "1d",
         "group_by": "ticker",
-        "threads": False,
+
+        # Controlled parallel download.
+        "threads": YF_THREADS,
+
         "progress": False,
         "auto_adjust": False,
         "actions": False,
@@ -198,52 +244,91 @@ def _download_chunk_raw(
     return yf.download(**kwargs)
 
 
+# ---------------------------------------------------------
+# Convert ticker frame into DB rows
+# ---------------------------------------------------------
+
 def _rows_from_frame(
     symbol: str,
     frame: pd.DataFrame,
     target_date: pd.Timestamp,
     last_stored_date: Optional[pd.Timestamp],
 ) -> List[Tuple[str, str, float]]:
-    """Convert one ticker's own frame into safe DB rows."""
+    """Create safe (SYMBOL, DATE, CLOSE) rows.
 
-    rows = []
+    No data beyond target_date is saved.
+
+    Existing rows are not duplicated.
+    """
 
     if frame is None or frame.empty:
-        return rows
+        return []
 
-    for date, row in frame.iterrows():
+    try:
 
-        close = row.get("Close")
+        work = frame[["Close"]].copy()
 
-        if pd.isna(close):
-            continue
-
-        date_ts = _normalise_date(date)
-
-        if date_ts is None:
-            continue
-
-        # Never save data beyond the target market date.
-        if date_ts > target_date:
-            continue
-
-        # Existing data must never be downloaded/saved again.
-        if (
-            last_stored_date is not None
-            and date_ts <= last_stored_date
-        ):
-            continue
-
-        rows.append(
-            (
-                symbol,
-                date_ts.strftime("%Y-%m-%d"),
-                float(close),
-            )
+        work["Close"] = pd.to_numeric(
+            work["Close"],
+            errors="coerce",
         )
 
-    return rows
+        # Normalize the index once.
+        dates = pd.to_datetime(
+            work.index,
+            errors="coerce",
+        )
 
+        if getattr(dates, "tz", None) is not None:
+            dates = dates.tz_localize(None)
+
+        dates = dates.normalize()
+
+        close_values = work["Close"].to_numpy()
+
+        rows = []
+
+        for date_value, close_value in zip(
+            dates,
+            close_values,
+        ):
+
+            if pd.isna(date_value):
+                continue
+
+            if pd.isna(close_value):
+                continue
+
+            date_ts = date_value
+
+            # Never save beyond detected market date.
+            if date_ts > target_date:
+                continue
+
+            # Existing data remains untouched.
+            if (
+                last_stored_date is not None
+                and date_ts <= last_stored_date
+            ):
+                continue
+
+            rows.append(
+                (
+                    symbol,
+                    date_ts.strftime("%Y-%m-%d"),
+                    float(close_value),
+                )
+            )
+
+        return rows
+
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------
+# Latest date from Yahoo frame
+# ---------------------------------------------------------
 
 def _latest_date_from_frame(
     frame: pd.DataFrame,
@@ -256,9 +341,14 @@ def _latest_date_from_frame(
         return _normalise_date(
             frame.index.max()
         )
+
     except Exception:
         return None
 
+
+# ---------------------------------------------------------
+# Determine actual latest market date
+# ---------------------------------------------------------
 
 def _determine_reference_latest_date(
     symbols: List[str],
@@ -266,7 +356,7 @@ def _determine_reference_latest_date(
     Optional[pd.Timestamp],
     Dict[str, pd.Timestamp],
 ]:
-    """Get newest valid market date from a small reference basket."""
+    """Detect newest valid market date from a small basket."""
 
     reference_symbols = [
         "^NSEI",
@@ -283,16 +373,19 @@ def _determine_reference_latest_date(
     latest_dates = {}
 
     try:
+
         raw = _download_chunk_raw(
             reference_symbols,
             period=REFERENCE_PROBE_PERIOD,
         )
+
     except Exception:
         return None, {}
 
     for symbol in reference_symbols:
 
         try:
+
             frame = _extract_symbol_frame(
                 raw,
                 symbol,
@@ -314,36 +407,56 @@ def _determine_reference_latest_date(
     if not latest_dates:
         return None, {}
 
-    return max(
-        latest_dates.values()
-    ), latest_dates
+    return (
+        max(latest_dates.values()),
+        latest_dates,
+    )
 
+
+# ---------------------------------------------------------
+# Empty result
+# ---------------------------------------------------------
 
 def _empty_result() -> Dict:
     return {
         "total": 0,
+
+        # Compatibility fields.
         "full": 0,
         "incremental": 0,
         "already_latest": 0,
+
+        # Primary result fields.
         "updated": 0,
         "up_to_date": 0,
         "last_available": 0,
         "no_data": 0,
+
         "succeeded": 0,
         "failed": 0,
+
         "failed_symbols": [],
+
+        # Diagnostic fields.
         "fetch_error": 0,
         "fetch_error_symbols": [],
+
         "updated_symbols": [],
         "up_to_date_symbols": [],
         "last_available_symbols": [],
         "no_data_symbols": [],
+
         "reference_latest_date": None,
         "market_data_through": None,
         "last_update_finished": None,
+
         "status": "SUCCESS",
     }
 
+
+# ---------------------------------------------------------
+# Main updater
+# ---------------------------------------------------------
 
 def update_symbols(
     db_path: str,
@@ -364,12 +477,12 @@ def update_symbols(
 
     try:
 
-        # =========================================================
-        # STEP 1
-        # Detect the latest real market date ONCE.
-        # =========================================================
+        # =====================================================
+        # 1. Detect latest available market date ONCE.
+        # =====================================================
 
         if on_progress:
+
             on_progress(
                 0,
                 total,
@@ -382,17 +495,16 @@ def update_symbols(
             )
         )
 
-        # =========================================================
-        # STEP 2
-        # Read latest stored date for every symbol ONCE.
-        # =========================================================
+        # =====================================================
+        # 2. Read all DB latest dates ONCE.
+        # =====================================================
 
         latest_dates = db.get_latest_dates(
             conn
         )
 
-        # If Yahoo reference probe failed, use the newest date
-        # already stored in the DB as a safe fallback.
+        # If Yahoo probe failed, use newest date already
+        # present in DB.
         if reference_latest_date is None:
 
             stored_dates = []
@@ -407,13 +519,13 @@ def update_symbols(
                     stored_dates.append(ts)
 
             if stored_dates:
+
                 reference_latest_date = max(
                     stored_dates
                 )
 
-        # If there is absolutely no market-date information,
-        # this is a genuine catastrophic condition. We cannot
-        # truthfully tell the user what date is being updated through.
+        # We cannot safely invent a target date when there
+        # is neither Yahoo data nor DB data.
         if reference_latest_date is None:
 
             raise RuntimeError(
@@ -426,7 +538,12 @@ def update_symbols(
             "%d-%b-%Y"
         )
 
+        # =====================================================
+        # 3. Show target date immediately.
+        # =====================================================
+
         if on_progress:
+
             on_progress(
                 0,
                 total,
@@ -436,14 +553,14 @@ def update_symbols(
                 ),
             )
 
-        # =========================================================
-        # STEP 3
-        # Build simple network buckets.
+        # =====================================================
+        # 4. Classify symbols for network efficiency.
         #
-        # This is NOT a full/incremental/already-latest workflow.
-        # Buckets only prevent one stale stock from forcing an
-        # unnecessarily old download for the other 49 stocks.
-        # =========================================================
+        # This is internal only.
+        #
+        # User-visible workflow remains simply:
+        # Updated / Last Available / No Data.
+        # =====================================================
 
         new_symbols = []
 
@@ -485,37 +602,36 @@ def update_symbols(
                     symbol
                 )
 
-        # =========================================================
-        # STEP 4
-        # Final public status containers.
-        # =========================================================
+        # =====================================================
+        # 5. Result containers.
+        # =====================================================
 
         updated_symbols = []
         last_available_symbols = []
         no_data_symbols = []
 
         fetch_error_symbols = []
-        problems: Dict[str, str] = {}
 
         done = 0
 
-        def report_progress(
-            message: str,
-        ) -> None:
+        def report_progress():
 
             if on_progress:
+
                 on_progress(
                     done,
                     total,
-                    message,
+                    (
+                        "Updating market data through: "
+                        + target_text
+                    ),
                 )
 
-        # =========================================================
-        # STEP 5
-        # Symbols already at target:
-        # They are simply UPDATED/current.
-        # No Yahoo request.
-        # =========================================================
+        # =====================================================
+        # 6. Already-current symbols.
+        #
+        # No Yahoo request needed.
+        # =====================================================
 
         for symbol in current_symbols:
 
@@ -528,17 +644,11 @@ def update_symbols(
         )
 
         if current_symbols:
-            report_progress(
-                (
-                    "Updating market data through: "
-                    + target_text
-                )
-            )
+            report_progress()
 
-        # =========================================================
-        # Helper:
-        # Process one 50-ticker Yahoo batch.
-        # =========================================================
+        # =====================================================
+        # 7. Batch processor.
+        # =====================================================
 
         def process_chunk(
             chunk: List[str],
@@ -555,50 +665,73 @@ def update_symbols(
 
             fetch_error = None
 
-            try:
+            # -------------------------------------------------
+            # Initial download.
+            # -------------------------------------------------
 
-                if is_new:
+            for attempt in range(
+                MAX_BATCH_RETRIES + 1
+            ):
 
-                    # IMPORTANT:
-                    # Do NOT combine period and end here.
-                    # Fetch 2 years, then filter locally to target.
-                    raw = _download_chunk_raw(
-                        chunk,
-                        period="2y",
+                try:
+
+                    if is_new:
+
+                        # IMPORTANT:
+                        # New stocks receive maximum available
+                        # daily history.
+                        raw = _download_chunk_raw(
+                            chunk,
+                            period="max",
+                        )
+
+                    else:
+
+                        end_date = (
+                            target_date
+                            + pd.Timedelta(days=1)
+                        ).strftime(
+                            "%Y-%m-%d"
+                        )
+
+                        raw = _download_chunk_raw(
+                            chunk,
+                            start=common_start,
+                            end=end_date,
+                        )
+
+                    # If Yahoo returned usable batch data,
+                    # stop retrying.
+                    if (
+                        raw is not None
+                        and not raw.empty
+                    ):
+                        fetch_error = None
+                        break
+
+                    fetch_error = (
+                        "Yahoo returned no usable batch data."
                     )
 
-                else:
+                except Exception as exc:
 
-                    end_date = (
-                        target_date
-                        + pd.Timedelta(days=1)
-                    ).strftime(
-                        "%Y-%m-%d"
+                    fetch_error = str(
+                        exc
                     )
 
-                    raw = _download_chunk_raw(
-                        chunk,
-                        start=common_start,
-                        end=end_date,
-                    )
+                    raw = pd.DataFrame()
 
-            except Exception as exc:
+                # Exactly one retry.
+                if attempt < MAX_BATCH_RETRIES:
+                    continue
 
-                fetch_error = str(
-                    exc
-                )
+            # -------------------------------------------------
+            # Extract each ticker independently.
+            # -------------------------------------------------
 
             batch_rows = []
 
-            # Keep track of which symbols actually contributed
-            # rows to this DB batch.
             batch_symbols = set()
-
-            # =====================================================
-            # CRITICAL SAFETY:
-            # Each symbol gets ONLY its own frame.
-            # No frame is reused for another symbol.
-            # =====================================================
 
             for symbol in chunk:
 
@@ -606,6 +739,8 @@ def update_symbols(
                     latest_dates.get(symbol)
                 )
 
+                # CRITICAL:
+                # Extract this symbol ONLY.
                 frame = _extract_symbol_frame(
                     raw,
                     symbol,
@@ -617,19 +752,8 @@ def update_symbols(
                 if frame.empty:
 
                     if fetch_error:
-                        problems[symbol] = (
-                            "FETCH_ERROR: "
-                            + fetch_error
-                        )
-
-                        if symbol not in fetch_error_symbols:
-                            fetch_error_symbols.append(
-                                symbol
-                            )
-
-                    else:
-                        problems[symbol] = (
-                            "NO_DATA"
+                        fetch_error_symbols.append(
+                            symbol
                         )
 
                     continue
@@ -642,17 +766,11 @@ def update_symbols(
                 )
 
                 if not rows:
-
-                    problems[symbol] = (
-                        "NO_NEW_VALID_DATA"
-                    )
-
                     continue
 
-                rows = rows[
-                    -MAX_CANDLES:
-                ]
-
+                # NO MAX_CANDLES slicing here.
+                #
+                # Complete available daily history is retained.
                 batch_rows.extend(
                     rows
                 )
@@ -661,11 +779,11 @@ def update_symbols(
                     symbol
                 )
 
-            # =====================================================
-            # Save all valid ticker rows.
-            # =====================================================
+            # -------------------------------------------------
+            # Insert all valid rows in one DB operation.
+            # -------------------------------------------------
 
-            inserted_ok = False
+            inserted_symbols = set()
 
             if batch_rows:
 
@@ -676,29 +794,30 @@ def update_symbols(
                         batch_rows,
                     )
 
-                    inserted_ok = True
-
-                except Exception as exc:
-
-                    reason = (
-                        "DB_INSERT_ERROR: "
-                        + str(exc)
+                    inserted_symbols = (
+                        batch_symbols
                     )
 
-                    for symbol in batch_symbols:
-                        problems[symbol] = reason
+                except Exception:
 
-            # =====================================================
-            # IMPORTANT:
-            # Only update our in-memory latest_dates AFTER the
-            # corresponding DB insert succeeds.
-            # =====================================================
+                    # DB failure must not make us pretend
+                    # the rows were successfully stored.
+                    inserted_symbols = set()
 
-            if inserted_ok:
+            # -------------------------------------------------
+            # Update in-memory latest dates ONLY after DB
+            # insertion succeeds.
+            # -------------------------------------------------
+
+            if inserted_symbols:
 
                 latest_saved_by_symbol = {}
 
-                for symbol, date_text, close in batch_rows:
+                for (
+                    symbol,
+                    date_text,
+                    close,
+                ) in batch_rows:
 
                     date_ts = _normalise_date(
                         date_text
@@ -717,13 +836,15 @@ def update_symbols(
                         previous is None
                         or date_ts > previous
                     ):
+
                         latest_saved_by_symbol[
                             symbol
                         ] = date_ts
 
-                for symbol, saved_latest in (
-                    latest_saved_by_symbol.items()
-                ):
+                for (
+                    symbol,
+                    saved_latest,
+                ) in latest_saved_by_symbol.items():
 
                     latest_dates[
                         symbol
@@ -737,32 +858,27 @@ def update_symbols(
 
                     else:
 
-                        # Data was saved, but it did not reach
-                        # the current target date.
                         last_available_symbols.append(
                             symbol
                         )
 
-            # =====================================================
-            # Every ticker in this chunk is now accounted for.
-            # =====================================================
+            # -------------------------------------------------
+            # One batch = one progress increment.
+            #
+            # NEVER reset done.
+            # -------------------------------------------------
 
             done += len(
                 chunk
             )
 
-            report_progress(
-                (
-                    "Updating market data through: "
-                    + target_text
-                )
-            )
+            report_progress()
 
-        # =========================================================
-        # STEP 6
-        # New symbols:
-        # 2 years, 50 at a time.
-        # =========================================================
+        # =====================================================
+        # 8. NEW SYMBOLS
+        #
+        # Full maximum available DAILY history.
+        # =====================================================
 
         for start_index in range(
             0,
@@ -781,18 +897,15 @@ def update_symbols(
                 is_new=True,
             )
 
-        # =========================================================
-        # STEP 7
-        # Existing symbols:
-        # Group only by their actual stored latest date.
+        # =====================================================
+        # 9. EXISTING SYMBOLS
         #
-        # Example:
-        # 30 symbols latest=2026-09-09
-        # 20 symbols latest=2026-09-08
+        # Fetch only missing dates.
         #
-        # This avoids downloading from 2026-09-08 for all 50
-        # just because one ticker is one day older.
-        # =========================================================
+        # Group by actual stored date so one old stock does
+        # not force the whole batch to download unnecessary
+        # historical dates.
+        # =====================================================
 
         for stored_date in sorted(
             date_buckets.keys()
@@ -826,17 +939,18 @@ def update_symbols(
                     is_new=False,
                 )
 
-        # =========================================================
-        # STEP 8
-        # Final classification for every symbol.
+        # =====================================================
+        # 10. Final classification.
         #
-        # Public statuses:
-        #   Updated
-        #   Last Available
-        #   No Data
+        # Updated:
+        #     DB reached target date.
         #
-        # Individual fetch problems do NOT become "Failed".
-        # =========================================================
+        # Last Available:
+        #     Existing data remains, but target was not reached.
+        #
+        # No Data:
+        #     No previous data and Yahoo produced nothing usable.
+        # =====================================================
 
         updated_set = set(
             updated_symbols
@@ -846,43 +960,46 @@ def update_symbols(
             last_available_symbols
         )
 
-        no_data_set = set(
-            no_data_symbols
-        )
+        no_data_set = set()
 
-        # Symbols not already current and not successfully saved
-        # need their final status determined from the original DB
-        # date plus the problem/fetch result.
         for symbol in symbols:
 
             if symbol in updated_set:
                 continue
 
-            original_ts = _normalise_date(
+            original_date = _normalise_date(
                 latest_dates.get(symbol)
             )
 
-            # If we did not have original data and the fetch did
-            # not produce valid rows, this is genuinely No Data.
-            if symbol in new_symbols:
-
-                if symbol not in updated_set:
-
-                    no_data_set.add(
-                        symbol
-                    )
-
-                continue
-
-            # Existing data but no new valid data:
-            # keep the old data and call it Last Available.
-            if symbol not in updated_set:
+            if (
+                original_date is not None
+                and original_date < target_date
+            ):
 
                 last_available_set.add(
                     symbol
                 )
 
-        # Rebuild lists in original symbol order.
+            elif symbol in new_symbols:
+
+                no_data_set.add(
+                    symbol
+                )
+
+            else:
+
+                # Defensive fallback.
+                if original_date is not None:
+                    last_available_set.add(
+                        symbol
+                    )
+                else:
+                    no_data_set.add(
+                        symbol
+                    )
+
+        # Preserve original symbol order.
+
         updated_symbols = [
             symbol
             for symbol in symbols
@@ -908,12 +1025,9 @@ def update_symbols(
             )
         ]
 
-        # =========================================================
-        # STEP 9
-        # Compatibility fields.
-        # Keep old fields so app_bridge/MainActivity don't need
-        # to change just because the updater was simplified.
-        # =========================================================
+        # =====================================================
+        # 11. Final counts.
+        # =====================================================
 
         updated_count = len(
             updated_symbols
@@ -927,47 +1041,50 @@ def update_symbols(
             no_data_symbols
         )
 
-        # Public updater completion is SUCCESS as long as the
-        # engine completed its work. Stock-level Yahoo problems
-        # do not make the whole update fail.
         succeeded = (
             updated_count
             + last_available_count
             + no_data_count
         )
 
-        # "failed" remains zero for stock-level fetch problems.
+        # Stock-level fetch problems never become an overall
+        # update crash/failure.
         failed = 0
 
+        # =====================================================
+        # 12. Final progress.
+        # =====================================================
+
         if on_progress:
+
             on_progress(
                 total,
                 total,
                 "Update complete",
             )
 
-        market_data_through = (
-            target_date.strftime(
-                "%d-%m-%Y"
-            )
-        )
+        # =====================================================
+        # 13. Compatibility result.
+        # =====================================================
 
         return {
             "total": total,
 
             # Compatibility fields.
-            # These are counts of network buckets, not workflow
-            # phases shown to the user.
-            "full": len(new_symbols),
+            "full": len(
+                new_symbols
+            ),
+
             "incremental": sum(
                 len(value)
                 for value in date_buckets.values()
             ),
+
             "already_latest": len(
                 current_symbols
             ),
 
-            # Primary statuses.
+            # Primary status counts.
             "updated": updated_count,
             "up_to_date": 0,
             "last_available": last_available_count,
@@ -976,13 +1093,15 @@ def update_symbols(
             "succeeded": succeeded,
             "failed": failed,
 
-            # No stock-level failure is exposed as overall failure.
+            # Overall update never reports stock-level
+            # Yahoo problems as fatal failures.
             "failed_symbols": [],
 
-            # Diagnostic information only.
+            # Diagnostic only.
             "fetch_error": len(
                 fetch_error_symbols
             ),
+
             "fetch_error_symbols": (
                 fetch_error_symbols[:50]
             ),
@@ -1008,7 +1127,9 @@ def update_symbols(
             ),
 
             "market_data_through": (
-                market_data_through
+                target_date.strftime(
+                    "%d-%m-%Y"
+                )
             ),
 
             "last_update_finished": (
@@ -1021,4 +1142,5 @@ def update_symbols(
         }
 
     finally:
+
         conn.close()
