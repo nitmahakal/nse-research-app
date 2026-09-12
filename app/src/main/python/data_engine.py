@@ -269,7 +269,6 @@ def _determine_reference_latest_date(
         return None, {}
 
     return max(latest_dates.values()), latest_dates
-
 def _process_group(
     conn,
     symbols: List[str],
@@ -281,14 +280,18 @@ def _process_group(
     ],
     done_before: int,
     total: int,
-) -> Tuple[List[str], Dict[str, str]]:
+) -> Tuple[
+    List[str],
+    Dict[str, str],
+    Dict[str, str],
+]:
 
     failed = {}
-    fetch_error = {}
+    fetch_errors = {}
     processed_count = 0
 
     if not symbols:
-        return [], failed
+        return [], failed, fetch_errors
 
     for start_index in range(
         0,
@@ -313,9 +316,7 @@ def _process_group(
                     symbol
                 )
 
-                ts = _normalise_date(
-                    value
-                )
+                ts = _normalise_date(value)
 
                 if ts is not None:
                     dates.append(ts)
@@ -355,7 +356,6 @@ def _process_group(
             fetch_error = str(exc)
 
         batch_rows = []
-        candidate_symbols = []
 
         for symbol in chunk:
 
@@ -367,20 +367,21 @@ def _process_group(
             if frame.empty:
 
                 if fetch_error:
-                    fetch_errors[symbol] = (
+
+                    reason = (
                         "FETCH_ERROR: "
                         + fetch_error
                     )
-                    failed[symbol] = (
-                        "FETCH_ERROR: "
-                        + fetch_error
-                    )
+
+                    fetch_errors[symbol] = reason
+                    failed[symbol] = reason
+
                 else:
-                    failed[symbol] = (
-                        "NO_DATA"
-                    )
-            
+
+                    failed[symbol] = "NO_DATA"
+
                 continue
+
             if mode == "incremental":
 
                 last_date = _normalise_date(
@@ -395,12 +396,8 @@ def _process_group(
 
             if frame.empty:
 
-                # No new rows were returned.
-                # This is not automatically a failure.
-                # Final DB verification decides.
-                candidate_symbols.append(
-                    symbol
-                )
+                # Existing valid data may already be
+                # the latest available data.
                 continue
 
             rows = _rows_from_frame(
@@ -421,42 +418,30 @@ def _process_group(
 
             batch_rows.extend(rows)
 
-            candidate_symbols.append(
-                symbol
-            )
+        if batch_rows:
 
-        insert_error = None
-
-        try:
-
-            if batch_rows:
+            try:
 
                 db.insert_price_rows_batch(
                     conn,
                     batch_rows,
                 )
 
-        except Exception as exc:
+            except Exception as exc:
 
-            insert_error = str(exc)
-
-            affected = {
-                row[0]
-                for row in batch_rows
-            }
-
-            for symbol in affected:
-                failed[symbol] = (
+                reason = (
                     "DB_INSERT_ERROR: "
-                    + insert_error
+                    + str(exc)
                 )
 
-        # DB state will be verified once at the end
-        # of the complete update, not after every chunk.
-        
-        # Older valid stock data is still usable.
-        # Do not mark a stock as failed just because
-        # its latest available date is older.
+                affected = {
+                    row[0]
+                    for row in batch_rows
+                }
+
+                for symbol in affected:
+                    failed[symbol] = reason
+
         processed_count += len(chunk)
 
         processed = min(
@@ -479,7 +464,7 @@ def _process_group(
     return (
         list(failed.keys()),
         failed,
-        fetch_errors
+        fetch_errors,
     )
 
 def _retry_failed_symbols(
