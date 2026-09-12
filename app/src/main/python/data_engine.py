@@ -798,29 +798,30 @@ def update_symbols(
         fetch_errors = {}
         fetch_errors.update(incremental_fetch_errors)
         fetch_errors.update(full_fetch_errors)
-                # -------------------------------------------------
-                # STEP 5:
-                # Retry everything that did not verify.
-                # -------------------------------------------------
-                # STEP 5: One combined retry for all failed symbols.
-                retry_failed = {}
-                
-                all_failed_symbols = list(
-                    dict.fromkeys(
-                        full_failed + incremental_failed
-                    )
+        
+            # -------------------------------------------------
+            # STEP 5:
+            # Retry all failed symbols once.
+            # -------------------------------------------------
+            
+            retry_failed = {}
+            
+            all_failed_symbols = list(
+                dict.fromkeys(
+                    incremental_failed + full_failed
                 )
-                
-                if all_failed_symbols:
-                
-                    retry_failed = _retry_failed_symbols(
-                        conn=conn,
-                        failed_symbols=all_failed_symbols,
-                        reasons=failed_reasons,
-                        reference_latest_date=reference_latest_date,
-                        on_progress=on_progress,
-                        retry_label="",
-                    )
+            )
+            
+            if all_failed_symbols:
+            
+                retry_failed = _retry_failed_symbols(
+                    conn=conn,
+                    failed_symbols=all_failed_symbols,
+                    reasons=failed_reasons,
+                    reference_latest_date=reference_latest_date,
+                    on_progress=on_progress,
+                    retry_label="",
+                )
                                 
                                 
         # -------------------------------------------------
