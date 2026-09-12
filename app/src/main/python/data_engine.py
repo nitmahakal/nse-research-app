@@ -794,35 +794,33 @@ def update_symbols(
             total=total,
         )
         
-        failed_reasons.update(full_reasons)
         fetch_errors = {}
         fetch_errors.update(incremental_fetch_errors)
         fetch_errors.update(full_fetch_errors)
         
-            # -------------------------------------------------
-            # STEP 5:
-            # Retry all failed symbols once.
-            # -------------------------------------------------
-            
-            retry_failed = {}
-            
-            all_failed_symbols = list(
-                dict.fromkeys(
-                    incremental_failed + full_failed
-                )
+        # -------------------------------------------------
+        # STEP 5:
+        # Retry all failed symbols once.
+        # -------------------------------------------------
+        
+        retry_failed = {}
+        
+        all_failed_symbols = list(
+            dict.fromkeys(
+                incremental_failed + full_failed
             )
-            
-            if all_failed_symbols:
-            
-                retry_failed = _retry_failed_symbols(
-                    conn=conn,
-                    failed_symbols=all_failed_symbols,
-                    reasons=failed_reasons,
-                    reference_latest_date=reference_latest_date,
-                    on_progress=on_progress,
-                    retry_label="",
-                )
-                                
+        )
+        
+        if all_failed_symbols:
+        
+            retry_failed = _retry_failed_symbols(
+                conn=conn,
+                failed_symbols=all_failed_symbols,
+                reasons=failed_reasons,
+                reference_latest_date=reference_latest_date,
+                on_progress=on_progress,
+                retry_label="",
+            )                                
                                 
         # -------------------------------------------------
         # STEP 6:
