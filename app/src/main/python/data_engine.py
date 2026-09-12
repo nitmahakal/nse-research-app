@@ -909,13 +909,16 @@ def update_symbols(
             if final_ts is None:
 
                 if symbol in fetch_errors:
+
                     fetch_error_symbols.append(
                         symbol
                     )
 
-                no_data_symbols.append(
-                    symbol
-                )
+                else:
+
+                    no_data_symbols.append(
+                        symbol
+                    )
 
                 final_failed[symbol] = (
                     retry_failed.get(
