@@ -716,7 +716,7 @@ def update_symbols(
             # Do not mark all symbols as failed.
             # Let normal stock downloads continue.
             reference_latest_date = pd.Timestamp.min
-                reference_text = (
+            reference_text = (
             reference_latest_date.strftime(
                 "%Y-%m-%d"
             )
